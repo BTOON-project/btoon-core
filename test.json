@@ -1,0 +1,6 @@
+{
+    "name": "John Doe",
+    "age": 42,
+    "is_member": true,
+    "scores": [10, 20, 30]
+}
