@@ -46,7 +46,8 @@ INSTANTIATE_TEST_SUITE_P(
         Value(String("😊")),
         Value(Timestamp{1234567890}),
         Value(Date{9876543210}),
-        Value(BigInt{{0x12, 0x34, 0x56, 0x78}})
+        Value(BigInt{{0x12, 0x34, 0x56, 0x78}}),
+        Value(StringView("hello"))
     )
 );
 

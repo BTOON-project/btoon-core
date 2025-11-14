@@ -1,0 +1,39 @@
+.TH BTOON 1 "November 2025" "btoon 0.0.1" "User Commands"
+.SH NAME
+btoon - a command-line tool for converting between JSON and BTOON
+.SH SYNOPSIS
+.B btoon
+[\fIcommand\fR] [\fIinput\fR] [\fIoutput\fR] [\fIoptions\fR]
+.SH DESCRIPTION
+.B btoon
+is a command-line tool for converting between the JSON and BTOON binary formats.
+.SH COMMANDS
+.TP
+.B encode
+Encode a JSON file to BTOON.
+.TP
+.B decode
+Decode a BTOON file to JSON.
+.SH OPTIONS
+.TP
+.B --compress
+Enable compression (default: zlib).
+.TP
+.B --version
+Print version information.
+.TP
+.B --help
+Print usage information.
+.SH EXAMPLES
+.TP
+.B btoon encode input.json output.btoon
+Encode a JSON file to BTOON.
+.TP
+.B btoon decode input.btoon output.json
+Decode a BTOON file to JSON.
+.SH SEE ALSO
+.BR btoon (7)
+.SH BUGS
+No known bugs.
+.SH AUTHOR
+btoon authors

@@ -123,15 +123,15 @@ set(BTOON_HEADERS
 )
 
 # Main library
-add_library(btoon ${BTOON_SOURCES} ${BTOON_HEADERS})
+add_library(btoon_core ${BTOON_SOURCES} ${BTOON_HEADERS})
 
-target_include_directories(btoon
+target_include_directories(btoon_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(btoon
+target_link_libraries(btoon_core
     PUBLIC
         ZLIB::ZLIB
         OpenSSL::SSL
@@ -139,21 +139,21 @@ target_link_libraries(btoon
 
 # Optional compression libraries
 if(BTOON_WITH_LZ4 AND LZ4_FOUND)
-    target_include_directories(btoon PUBLIC ${LZ4_INCLUDE_DIRS})
-    target_link_directories(btoon PUBLIC ${LZ4_LIBRARY_DIRS})
-    target_link_libraries(btoon PUBLIC ${LZ4_LIBRARIES})
-    target_compile_definitions(btoon PUBLIC BTOON_WITH_LZ4)
+    target_include_directories(btoon_core PUBLIC ${LZ4_INCLUDE_DIRS})
+    target_link_directories(btoon_core PUBLIC ${LZ4_LIBRARY_DIRS})
+    target_link_libraries(btoon_core PUBLIC ${LZ4_LIBRARIES})
+    target_compile_definitions(btoon_core PUBLIC BTOON_WITH_LZ4)
 endif()
 
 if(BTOON_WITH_ZSTD AND ZSTD_FOUND)
-    target_include_directories(btoon PUBLIC ${ZSTD_INCLUDE_DIRS})
-    target_link_directories(btoon PUBLIC ${ZSTD_LIBRARY_DIRS})
-    target_link_libraries(btoon PUBLIC ${ZSTD_LIBRARIES})
-    target_compile_definitions(btoon PUBLIC BTOON_WITH_ZSTD)
+    target_include_directories(btoon_core PUBLIC ${ZSTD_INCLUDE_DIRS})
+    target_link_directories(btoon_core PUBLIC ${ZSTD_LIBRARY_DIRS})
+    target_link_libraries(btoon_core PUBLIC ${ZSTD_LIBRARIES})
+    target_compile_definitions(btoon_core PUBLIC BTOON_WITH_ZSTD)
 endif()
 
 # Version info
-target_compile_definitions(btoon
+target_compile_definitions(btoon_core
     PUBLIC
         BTOON_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
         BTOON_VERSION_MINOR=${PROJECT_VERSION_MINOR}
@@ -163,10 +163,10 @@ target_compile_definitions(btoon
 # Examples
 if(BUILD_EXAMPLES)
     add_executable(example_basic examples/basic.cpp)
-    target_link_libraries(example_basic btoon)
+    target_link_libraries(example_basic btoon_core)
     
     add_executable(example_tabular examples/tabular.cpp)
-    target_link_libraries(example_tabular btoon)
+    target_link_libraries(example_tabular btoon_core)
     
     install(TARGETS example_basic example_tabular
         RUNTIME DESTINATION bin
@@ -200,7 +200,7 @@ if(BUILD_TESTS)
     )
     target_link_libraries(btoon_tests
         PRIVATE
-            btoon
+            btoon_core
             GTest::gtest
             GTest::gtest_main
     )
@@ -210,14 +210,20 @@ if(BUILD_TESTS)
     
     # Fuzz targets (if enabled)
     if(ENABLE_FUZZING)
+        execute_process(COMMAND clang --print-resource-dir OUTPUT_VARIABLE CLANG_RESOURCE_DIR OUTPUT_STRIP_TRAILING_WHITESPACE)
+        find_library(FUZZER_LIB clang_rt.fuzzer HINTS ${CLANG_RESOURCE_DIR}/lib/darwin)
+        if(FUZZER_LIB)
+            message(STATUS "Found Fuzzer library: ${FUZZER_LIB}")
+        else()
+            message(FATAL_ERROR "Fuzzer library not found. Please ensure Clang with libFuzzer is installed.")
+        endif()
         add_executable(btoon_fuzz_decoder tests/fuzz_decoder.cpp)
-        target_link_libraries(btoon_fuzz_decoder btoon)
+        target_link_libraries(btoon_fuzz_decoder btoon_core ${FUZZER_LIB})
         set_target_properties(btoon_fuzz_decoder PROPERTIES
             CXX_STANDARD 20
         )
     endif()
 endif()
-
 # Benchmarks
 if(BUILD_BENCHMARKS)
     find_package(benchmark QUIET)
@@ -242,20 +248,15 @@ endif()
 
 # CLI tool
 if(BUILD_TOOLS)
-    include(FetchContent)
-    FetchContent_Declare(
-        nlohmann_json
-        GIT_REPOSITORY https://github.com/nlohmann/json.git
-        GIT_TAG v3.11.2
-    )
-    FetchContent_MakeAvailable(nlohmann_json)
-    add_executable(btooncli tools/btooncli.cpp)
-    target_link_libraries(btooncli btoon nlohmann_json::nlohmann_json)
-    install(TARGETS btooncli RUNTIME DESTINATION bin)
+    add_executable(btoon tools/btooncli.cpp)
+    target_include_directories(btoon PRIVATE include/third_party)
+    target_link_libraries(btoon btoon_core)
+    install(TARGETS btoon RUNTIME DESTINATION bin)
+    install(FILES docs/btoon.1 DESTINATION share/man/man1)
 endif()
 
 # Installation
-install(TARGETS btoon
+install(TARGETS btoon_core
     EXPORT btoonTargets
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib

@@ -1,22 +1,12 @@
+#include "btoon/btoon.h"
 #include <cstdint>
-#include <cstddef>
-#include "btoon/decoder.h"
+#include <stddef.h>
 
-extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
-    if (size == 0) {
-        return 0;
-    }
-    
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
     try {
-        btoon::Decoder decoder;
-        std::vector<uint8_t> buffer(data, data + size);
-        decoder.decode(buffer);
-    } catch (const btoon::BtoonException&) {
-        // Expected for invalid input
-    } catch (...) {
-        // Unexpected exception
+        btoon::decode({Data, Size});
+    } catch (const btoon::BtoonException& e) {
+        // Ignore exceptions, as the fuzzer will generate invalid data.
     }
-    
     return 0;
 }
-

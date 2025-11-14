@@ -22,6 +22,7 @@ struct EncodeVisitor {
     std::vector<uint8_t> operator()(Uint v) const { return encoder.encodeUint(v); }
     std::vector<uint8_t> operator()(Float v) const { return encoder.encodeFloat(v); }
     std::vector<uint8_t> operator()(const String& v) const { return encoder.encodeString(v); }
+    std::vector<uint8_t> operator()(StringView v) const { return encoder.encodeString(std::string(v)); }
     std::vector<uint8_t> operator()(const Binary& v) const { return encoder.encodeBinary(v); }
     std::vector<uint8_t> operator()(const Extension& v) const { return encoder.encodeExtension(v.type, v.data); }
     std::vector<uint8_t> operator()(const Timestamp& v) const { return encoder.encodeTimestamp(v.seconds); }

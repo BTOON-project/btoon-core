@@ -1,12 +1,12 @@
 #include "btoon/btoon.h"
-#include <nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 #include <iostream>
 #include <fstream>
 #include <vector>
 #include <string>
 
 using namespace btoon;
-using json = nlohmann::json;
+using json = nlohmann::basic_json<std::map>;
 
 // --- Conversion Functions ---
 
@@ -50,6 +50,7 @@ json btoon_to_json(const Value& v) {
         if constexpr (std::is_same_v<T, Uint>) return arg;
         if constexpr (std::is_same_v<T, Float>) return arg;
         if constexpr (std::is_same_v<T, String>) return arg;
+        if constexpr (std::is_same_v<T, StringView>) return std::string(arg);
         if constexpr (std::is_same_v<T, Binary>) return arg;
         if constexpr (std::is_same_v<T, Array>) {
             json j = json::array();
@@ -72,16 +73,39 @@ json btoon_to_json(const Value& v) {
 // --- Main CLI Logic ---
 
 void printUsage(const char* name) {
-    std::cerr << "Usage: " << name << " [encode|decode] <input> <output> [--compress]" << std::endl;
+    std::cerr << "Usage: btoon [command] <input> <output> [options]" << std::endl;
+    std::cerr << "Commands:" << std::endl;
+    std::cerr << "  encode <input> <output>    Encode JSON to BTOON" << std::endl;
+    std::cerr << "  decode <input> <output>    Decode BTOON to JSON" << std::endl;
+    std::cerr << "Options:" << std::endl;
+    std::cerr << "  --compress    Enable compression (default: zlib)" << std::endl;
+    std::cerr << "  --version     Print version information" << std::endl;
+    std::cerr << "  --help        Print this usage information" << std::endl;
 }
 
 int main(int argc, char** argv) {
-    if (argc < 4) {
+    if (argc < 2) {
         printUsage(argv[0]);
         return 1;
     }
 
     std::string command = argv[1];
+
+    if (command == "--version" || command == "-v") {
+        std::cout << "btoon version " << btoon::version() << std::endl;
+        return 0;
+    }
+
+    if (command == "--help" || command == "-h") {
+        printUsage(argv[0]);
+        return 0;
+    }
+
+    if (argc < 4) {
+        printUsage(argv[0]);
+        return 1;
+    }
+
     std::string input_file = argv[2];
     std::string output_file = argv[3];
     bool compress = (argc > 4 && std::string(argv[4]) == "--compress");

@@ -207,7 +207,7 @@ Float Decoder::decodeFloat(std::span<const uint8_t> buffer, size_t& pos) const {
     }
 }
 
-String Decoder::decodeString(std::span<const uint8_t> buffer, size_t& pos) const {
+StringView Decoder::decodeString(std::span<const uint8_t> buffer, size_t& pos) const {
     uint8_t marker = buffer[pos];
     pos++;
     size_t len = 0;
@@ -233,7 +233,7 @@ String Decoder::decodeString(std::span<const uint8_t> buffer, size_t& pos) const
         throw BtoonException("Invalid string marker.");
     }
     check_overflow(pos, len, buffer.size());
-    String str(reinterpret_cast<const char*>(&buffer[pos]), len);
+    StringView str(reinterpret_cast<const char*>(&buffer[pos]), len);
     pos += len;
     return str;
 }
@@ -319,7 +319,7 @@ Map Decoder::decodeMap(std::span<const uint8_t> buffer, size_t& pos) const {
     }
     Map map;
     for (size_t i = 0; i < len; ++i) {
-        String key = decodeString(buffer, pos);
+        String key(decodeString(buffer, pos));
         map[key] = decode(buffer, pos);
     }
     return map;

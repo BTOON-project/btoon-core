@@ -1,3 +1,16 @@
+//  ██████╗ ████████╗ ██████╗  ██████╗ ███╗   ██╗
+//  ██╔══██╗╚══██╔══╝██╔═══██╗██╔═══██╗████╗  ██║
+//  ██████╔╝   ██║   ██║   ██║██║   ██║██╔██╗ ██║
+//  ██╔══██╗   ██║   ██║   ██║██║   ██║██║╚██╗██║
+//  ██████╔╝   ██║   ╚██████╔╝╚██████╔╝██║ ╚████║
+//  ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝
+//
+//  BTOON Core
+//  Version 0.0.1
+//  https://btoon.net & https://github.com/BTOON-project/btoon-core
+//
+// SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
+// SPDX-License-Identifier: MIT
 /**
  * @file btoon.h
  * @brief Main header file for the BTOON library.
@@ -29,9 +42,10 @@ using Int = int64_t;
 using Uint = uint64_t;
 using Float = double;
 using String = std::string;
+using StringView = std::string_view;
 using Binary = std::vector<uint8_t>;
 using Array = std::vector<Value>;
-using Map = std::map<std::string, Value>;
+using Map = std::map<String, Value>;
 
 /**
  * @brief Represents a MessagePack extension type.
@@ -75,6 +89,7 @@ struct Value : std::variant<
     Uint,
     Float,
     String,
+    StringView,
     Binary,
     Array,
     Map,

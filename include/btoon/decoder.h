@@ -67,7 +67,7 @@ private:
     Int decodeInt(std::span<const uint8_t> buffer, size_t& pos) const;
     Uint decodeUint(std::span<const uint8_t> buffer, size_t& pos) const;
     Float decodeFloat(std::span<const uint8_t> buffer, size_t& pos) const;
-    String decodeString(std::span<const uint8_t> buffer, size_t& pos) const;
+    StringView decodeString(std::span<const uint8_t> buffer, size_t& pos) const;
     Binary decodeBinary(std::span<const uint8_t> buffer, size_t& pos) const;
     Array decodeArray(std::span<const uint8_t> buffer, size_t& pos) const;
     Map decodeMap(std::span<const uint8_t> buffer, size_t& pos) const;
