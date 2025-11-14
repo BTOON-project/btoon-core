@@ -9,7 +9,7 @@
 - [x] Streaming API for large datasets
 - [x] Schema validation
 - [x] C-API for language bindings
-- [x] CLI tool (`btooncli`) for encoding/decoding JSON
+- [x] CLI tool (`btoon`) for encoding/decoding JSON
 
 ### Compression & Security
 - [x] Zlib compression support
@@ -29,19 +29,21 @@
 ## Version 0.0.2 - Performance & Bindings
 
 ### Language Bindings
-- [ ] Python bindings (pybind11) - `btoon-python`
-- [ ] Node.js bindings (N-API) - `btoon-nodejs`
-- [ ] Go bindings (cgo) - `btoon-go`
+- [x] Node.js bindings (N-API) - `btoon-nodejs` - **Implemented**
+- [ ] Python bindings (pybind11) - `btoon-python` - In progress
+- [ ] Go bindings (cgo) - `btoon-go` - Planned
+- [ ] PHP bindings - `btoon-php` - Planned
+- [ ] Javascript bindings - `btoon-javascript` - Planned
 
 ### Performance Optimizations
-- [ ] Zero-copy decoding with `std::span` API (partially complete)
+- [x] Zero-copy decoding with `std::span` API - **Implemented**
 - [ ] SIMD optimizations for bulk operations
 - [ ] Memory pool allocator for reduced allocations
 - [ ] Columnar compression codecs (delta, RLE, dictionary)
 
 ### Testing & Quality
-- [ ] Performance benchmarks vs JSON/BSON/MessagePack
-- [ ] libFuzzer fuzz targets
+- [x] Performance benchmarks vs JSON/BSON/MessagePack - **Implemented** (benchmark.cpp)
+- [x] libFuzzer fuzz targets - **Implemented** (fuzz_decoder.cpp)
 - [ ] Performance regression tests
 
 ## Version 0.0.3 - Advanced Features
