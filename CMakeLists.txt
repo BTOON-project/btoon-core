@@ -74,7 +74,10 @@ endif()
 find_package(ZLIB REQUIRED)
 find_package(OpenSSL REQUIRED)
 
-find_package(PkgConfig REQUIRED)
+# PkgConfig is only needed on Unix systems for optional compression libraries
+if(UNIX)
+    find_package(PkgConfig REQUIRED)
+endif()
 
 # Optional dependencies
 option(BTOON_WITH_LZ4 "Enable LZ4 compression" ON)
