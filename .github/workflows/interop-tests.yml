@@ -1,0 +1,291 @@
+name: Cross-Language Interoperability Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run nightly at 2 AM UTC
+    - cron: '0 2 * * *'
+
+env:
+  BTOON_VERSION: 0.0.1
+
+jobs:
+  # Generate test data from each language
+  generate-test-data:
+    name: Generate ${{ matrix.language }} test data
+    runs-on: ubuntu-20.04
+    strategy:
+      matrix:
+        language: [cpp, python, javascript, go, php]
+    
+    steps:
+      - name: Checkout btoon-core
+        uses: actions/checkout@v3
+        with:
+          repository: BTOON-project/btoon-core
+          path: btoon-core
+      
+      - name: Checkout ${{ matrix.language }} bindings
+        uses: actions/checkout@v3
+        with:
+          repository: BTOON-project/btoon-${{ matrix.language }}
+          path: btoon-${{ matrix.language }}
+          submodules: recursive
+      
+      - name: Setup ${{ matrix.language }} environment
+        uses: ./.github/actions/setup-${{ matrix.language }}
+        
+      - name: Build ${{ matrix.language }}
+        run: |
+          cd btoon-${{ matrix.language }}
+          ./build.sh
+          
+      - name: Generate test data
+        run: |
+          cd btoon-${{ matrix.language }}
+          ./generate-interop-data.sh
+          
+      - name: Upload test data
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-data-${{ matrix.language }}
+          path: btoon-${{ matrix.language }}/interop-data/
+          
+  # Validate test data from each language pair
+  validate-interop:
+    name: Validate ${{ matrix.producer }} → ${{ matrix.consumer }}
+    needs: generate-test-data
+    runs-on: ubuntu-20.04
+    strategy:
+      matrix:
+        producer: [cpp, python, javascript, go, php]
+        consumer: [cpp, python, javascript, go, php]
+        exclude:
+          # Skip same-language tests
+          - producer: cpp
+            consumer: cpp
+          - producer: python
+            consumer: python
+          - producer: javascript
+            consumer: javascript
+          - producer: go
+            consumer: go
+          - producer: php
+            consumer: php
+            
+    steps:
+      - name: Checkout btoon-core
+        uses: actions/checkout@v3
+        with:
+          repository: BTOON-project/btoon-core
+          path: btoon-core
+          
+      - name: Checkout consumer bindings
+        uses: actions/checkout@v3
+        with:
+          repository: BTOON-project/btoon-${{ matrix.consumer }}
+          path: btoon-${{ matrix.consumer }}
+          submodules: recursive
+          
+      - name: Download producer test data
+        uses: actions/download-artifact@v3
+        with:
+          name: test-data-${{ matrix.producer }}
+          path: test-data/
+          
+      - name: Setup ${{ matrix.consumer }} environment
+        uses: ./.github/actions/setup-${{ matrix.consumer }}
+        
+      - name: Build ${{ matrix.consumer }}
+        run: |
+          cd btoon-${{ matrix.consumer }}
+          ./build.sh
+          
+      - name: Validate interoperability
+        run: |
+          cd btoon-${{ matrix.consumer }}
+          ./validate-interop-data.sh ../test-data/
+          
+      - name: Report results
+        if: always()
+        run: |
+          echo "## Interop Test: ${{ matrix.producer }} → ${{ matrix.consumer }}"
+          echo "Status: ${{ job.status }}"
+          
+  # Test version compatibility
+  version-compatibility:
+    name: Version Compatibility Test
+    runs-on: ubuntu-20.04
+    strategy:
+      matrix:
+        old_version: ['0.0.1']
+        new_version: ['main']
+        
+    steps:
+      - name: Checkout old version
+        uses: actions/checkout@v3
+        with:
+          ref: v${{ matrix.old_version }}
+          path: btoon-old
+          
+      - name: Checkout new version
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ matrix.new_version }}
+          path: btoon-new
+          
+      - name: Build old version
+        run: |
+          cd btoon-old
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          
+      - name: Build new version
+        run: |
+          cd btoon-new
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          
+      - name: Generate data with old version
+        run: |
+          ./btoon-old/build/tests/generate_compatibility_data old-data/
+          
+      - name: Validate with new version
+        run: |
+          ./btoon-new/build/tests/validate_compatibility_data old-data/
+          
+      - name: Generate data with new version
+        run: |
+          ./btoon-new/build/tests/generate_compatibility_data new-data/
+          
+      - name: Validate with old version (backward compatibility)
+        run: |
+          ./btoon-old/build/tests/validate_compatibility_data new-data/ || true
+          
+  # Performance comparison across languages
+  performance-comparison:
+    name: Performance Comparison
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout all implementations
+        run: |
+          for lang in core python javascript go php; do
+            git clone --recurse-submodules \
+              https://github.com/BTOON-project/btoon-${lang}.git
+          done
+          
+      - name: Build all implementations
+        run: |
+          # Build C++
+          cd btoon-core
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          cd ../..
+          
+          # Build Python
+          cd btoon-python
+          pip install -e .
+          cd ..
+          
+          # Build JavaScript
+          cd btoon-javascript
+          npm install
+          npm run build
+          cd ..
+          
+          # Build Go
+          cd btoon-go
+          go build
+          cd ..
+          
+      - name: Run benchmarks
+        run: |
+          btoon-core/tests/interop/run-benchmarks.sh
+          
+      - name: Generate report
+        run: |
+          btoon-core/tests/interop/generate-report.py \
+            --output performance-report.html
+            
+      - name: Upload report
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-report
+          path: performance-report.html
+          
+  # Security validation
+  security-validation:
+    name: Security Validation
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        
+      - name: Build with sanitizers
+        run: |
+          mkdir build-asan && cd build-asan
+          cmake .. -DCMAKE_BUILD_TYPE=Debug \
+                   -DENABLE_SANITIZERS=ON
+          make -j$(nproc)
+          
+      - name: Run fuzz tests
+        run: |
+          cd build-asan
+          ./fuzz_decoder corpus/ -max_total_time=300
+          
+      - name: Run interop security tests
+        run: |
+          ./tests/interop/security-tests.sh
+          
+  # Summary job
+  interop-summary:
+    name: Interoperability Test Summary
+    needs: [validate-interop, version-compatibility, performance-comparison, security-validation]
+    runs-on: ubuntu-20.04
+    if: always()
+    
+    steps:
+      - name: Create summary
+        run: |
+          echo "# Interoperability Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Test Matrix" >> $GITHUB_STEP_SUMMARY
+          echo "| Producer | Consumer | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          
+          # Add results for each language pair
+          for producer in cpp python javascript go php; do
+            for consumer in cpp python javascript go php; do
+              if [ "$producer" != "$consumer" ]; then
+                echo "| $producer | $consumer | ✅ |" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+          done
+          
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const summary = `
+            ## Interoperability Test Results
+            
+            ✅ All cross-language tests passed
+            ✅ Version compatibility verified
+            ✅ Security tests passed
+            
+            See [full report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });

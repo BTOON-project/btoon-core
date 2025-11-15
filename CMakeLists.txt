@@ -113,6 +113,7 @@ set(BTOON_SOURCES
     src/schema.cpp
     src/memory_pool.cpp
     src/validator.cpp
+    src/zero_copy.cpp
     src/delta_codec.cpp
     src/rle_codec.cpp
     src/dictionary_codec.cpp
