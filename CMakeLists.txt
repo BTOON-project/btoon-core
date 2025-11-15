@@ -205,6 +205,7 @@ if(BUILD_TESTS)
         tests/test_streaming.cpp
         tests/test_schema.cpp
         tests/test_schema_versioning.cpp
+        tests/test_schema_inference.cpp
         tests/test_performance.cpp
         tests/test_compression_levels.cpp
     )

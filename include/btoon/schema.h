@@ -254,6 +254,73 @@ namespace schemas {
     std::shared_ptr<Schema> createTable(const std::vector<SchemaField>& columns);
 }
 
+/**
+ * @brief Schema inference options
+ */
+struct InferenceOptions {
+    bool infer_constraints = true;      // Infer min/max, pattern, enum
+    bool strict_types = false;          // If false, allow type variations (e.g., int/uint)
+    size_t sample_size = 1000;          // Max number of samples to analyze
+    double required_threshold = 0.95;   // Field presence threshold for required
+    size_t max_enum_values = 10;        // Max unique values to consider as enum
+    bool infer_patterns = true;         // Try to detect string patterns
+    bool merge_numeric_types = true;    // Treat int/uint/float as compatible
+};
+
+/**
+ * @brief Schema inference engine
+ */
+class SchemaInferrer {
+public:
+    SchemaInferrer(const InferenceOptions& options = InferenceOptions{});
+    ~SchemaInferrer();
+    
+    // Move semantics
+    SchemaInferrer(SchemaInferrer&&) noexcept;
+    SchemaInferrer& operator=(SchemaInferrer&&) noexcept;
+    
+    // Delete copy semantics
+    SchemaInferrer(const SchemaInferrer&) = delete;
+    SchemaInferrer& operator=(const SchemaInferrer&) = delete;
+    
+    /**
+     * @brief Infer schema from a single value
+     */
+    Schema infer(const Value& value, const std::string& name = "InferredSchema");
+    
+    /**
+     * @brief Infer schema from array of similar objects
+     */
+    Schema inferFromArray(const Array& array, const std::string& name = "InferredSchema");
+    
+    /**
+     * @brief Merge multiple inferred schemas
+     */
+    Schema merge(std::vector<Schema>&& schemas, const std::string& name = "MergedSchema");
+    
+    /**
+     * @brief Get inference statistics
+     */
+    struct Statistics {
+        size_t samples_analyzed;
+        size_t fields_discovered;
+        size_t optional_fields;
+        size_t enum_fields;
+        std::unordered_map<std::string, std::string> field_types;
+        std::unordered_map<std::string, double> field_presence_ratio;
+    };
+    
+    Statistics getStatistics() const;
+    
+private:
+    std::unique_ptr<class SchemaInferrerImpl> pimpl_;
+};
+
+/**
+ * @brief Convenience function to infer schema from data
+ */
+Schema inferSchema(const Value& value, const InferenceOptions& options = InferenceOptions{});
+
 } // namespace btoon
 
 #endif // BTOON_SCHEMA_H

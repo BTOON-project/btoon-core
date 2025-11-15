@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <regex>
 #include <fstream>
+#include <set>
+#include <limits>
 
 namespace btoon {
 
@@ -958,6 +960,364 @@ namespace schemas {
         
         return builder.build();
     }
+}
+
+// Schema Inference Implementation
+class SchemaInferrerImpl {
+public:
+    InferenceOptions options;
+    SchemaInferrer::Statistics stats;
+    
+    SchemaInferrerImpl(const InferenceOptions& opts) : options(opts), stats{} {}
+    
+    std::string inferType(const Value& value) const {
+        return std::visit([this](auto&& arg) -> std::string {
+            using T = std::decay_t<decltype(arg)>;
+            if constexpr (std::is_same_v<T, Nil>) return "nil";
+            else if constexpr (std::is_same_v<T, Bool>) return "bool";
+            else if constexpr (std::is_same_v<T, Int>) return options.merge_numeric_types ? "number" : "int";
+            else if constexpr (std::is_same_v<T, Uint>) return options.merge_numeric_types ? "number" : "uint";
+            else if constexpr (std::is_same_v<T, Float>) return options.merge_numeric_types ? "number" : "float";
+            else if constexpr (std::is_same_v<T, String>) return "string";
+            else if constexpr (std::is_same_v<T, Binary>) return "binary";
+            else if constexpr (std::is_same_v<T, Array>) return "array";
+            else if constexpr (std::is_same_v<T, Map>) return "map";
+            else if constexpr (std::is_same_v<T, Extension>) return "extension";
+            else if constexpr (std::is_same_v<T, Timestamp>) return "timestamp";
+            else if constexpr (std::is_same_v<T, Date>) return "date";
+            else if constexpr (std::is_same_v<T, DateTime>) return "datetime";
+            else if constexpr (std::is_same_v<T, BigInt>) return "bigint";
+            else return "unknown";
+        }, value);
+    }
+    
+    std::optional<Value> inferConstraints(const std::vector<Value>& values, const std::string& type) {
+        if (!options.infer_constraints || values.empty()) {
+            return std::nullopt;
+        }
+        
+        Map constraints;
+        
+        if (type == "string") {
+            size_t min_len = std::numeric_limits<size_t>::max();
+            size_t max_len = 0;
+            std::set<std::string> unique_values;
+            
+            for (const auto& v : values) {
+                if (auto* s = std::get_if<String>(&v)) {
+                    min_len = std::min(min_len, s->size());
+                    max_len = std::max(max_len, s->size());
+                    unique_values.insert(*s);
+                }
+            }
+            
+            if (min_len != std::numeric_limits<size_t>::max()) {
+                constraints["minLength"] = static_cast<Uint>(min_len);
+                constraints["maxLength"] = static_cast<Uint>(max_len);
+            }
+            
+            // Infer enum if few unique values
+            if (unique_values.size() <= options.max_enum_values && unique_values.size() > 0) {
+                Array enum_values;
+                for (const auto& s : unique_values) {
+                    enum_values.push_back(s);
+                }
+                constraints["enum"] = enum_values;
+            }
+            
+            // TODO: Infer patterns if options.infer_patterns is true
+            
+        } else if (type == "int" || type == "uint" || type == "number") {
+            double min_val = std::numeric_limits<double>::max();
+            double max_val = std::numeric_limits<double>::lowest();
+            
+            for (const auto& v : values) {
+                double val = 0;
+                if (auto* i = std::get_if<Int>(&v)) {
+                    val = static_cast<double>(*i);
+                } else if (auto* u = std::get_if<Uint>(&v)) {
+                    val = static_cast<double>(*u);
+                } else if (auto* f = std::get_if<Float>(&v)) {
+                    val = *f;
+                }
+                min_val = std::min(min_val, val);
+                max_val = std::max(max_val, val);
+            }
+            
+            if (min_val != std::numeric_limits<double>::max()) {
+                if (type == "int") {
+                    constraints["min"] = static_cast<Int>(min_val);
+                    constraints["max"] = static_cast<Int>(max_val);
+                } else if (type == "uint") {
+                    constraints["min"] = static_cast<Uint>(min_val);
+                    constraints["max"] = static_cast<Uint>(max_val);
+                } else {
+                    constraints["min"] = static_cast<Float>(min_val);
+                    constraints["max"] = static_cast<Float>(max_val);
+                }
+            }
+        } else if (type == "array") {
+            size_t min_items = std::numeric_limits<size_t>::max();
+            size_t max_items = 0;
+            
+            for (const auto& v : values) {
+                if (auto* a = std::get_if<Array>(&v)) {
+                    min_items = std::min(min_items, a->size());
+                    max_items = std::max(max_items, a->size());
+                }
+            }
+            
+            if (min_items != std::numeric_limits<size_t>::max()) {
+                constraints["minItems"] = static_cast<Uint>(min_items);
+                constraints["maxItems"] = static_cast<Uint>(max_items);
+            }
+        }
+        
+        return constraints.empty() ? std::nullopt : std::optional<Value>(constraints);
+    }
+    
+    Schema inferFromMap(const Map& map, const std::string& name) {
+        SchemaBuilder builder(name);
+        builder.version(1, 0, 0);
+        
+        for (const auto& [key, value] : map) {
+            std::string field_type = inferType(value);
+            SchemaField field{key, field_type, true, std::nullopt, std::nullopt, std::nullopt};
+            
+            // Infer constraints for single value
+            if (options.infer_constraints) {
+                field.constraints = inferConstraints({value}, field_type);
+            }
+            
+            builder.field(field);
+            stats.fields_discovered++;
+        }
+        
+        stats.samples_analyzed = 1;
+        return std::move(*builder.build());
+    }
+    
+    Schema inferFromArrayOfMaps(const Array& array, const std::string& name) {
+        if (array.empty()) {
+            return Schema(name, SchemaVersion{1, 0, 0}, {});
+        }
+        
+        // Collect field information
+        std::unordered_map<std::string, std::vector<Value>> field_values;
+        std::unordered_map<std::string, size_t> field_occurrence;
+        std::unordered_map<std::string, std::string> field_types;
+        
+        size_t sample_count = 0;
+        for (const auto& item : array) {
+            if (sample_count >= options.sample_size) break;
+            
+            const Map* map = std::get_if<Map>(&item);
+            if (!map) continue;
+            
+            sample_count++;
+            
+            for (const auto& [key, value] : *map) {
+                field_values[key].push_back(value);
+                field_occurrence[key]++;
+                
+                // Infer type, merging if necessary
+                std::string new_type = inferType(value);
+                if (field_types.find(key) == field_types.end()) {
+                    field_types[key] = new_type;
+                } else if (field_types[key] != new_type) {
+                    // Handle type conflicts
+                    if (options.merge_numeric_types &&
+                        ((field_types[key] == "int" || field_types[key] == "uint" || field_types[key] == "float" || field_types[key] == "number") &&
+                         (new_type == "int" || new_type == "uint" || new_type == "float"))) {
+                        field_types[key] = "number";
+                    } else if (!options.strict_types) {
+                        field_types[key] = "any";  // Generic type for mixed types
+                    }
+                }
+            }
+        }
+        
+        // Build schema
+        SchemaBuilder builder(name);
+        builder.version(1, 0, 0);
+        
+        for (const auto& [field_name, values] : field_values) {
+            double presence_ratio = static_cast<double>(field_occurrence[field_name]) / sample_count;
+            bool required = presence_ratio >= options.required_threshold;
+            
+            SchemaField field{
+                field_name,
+                field_types[field_name],
+                required,
+                std::nullopt,
+                std::nullopt,
+                inferConstraints(values, field_types[field_name])
+            };
+            
+            builder.field(field);
+            
+            // Update statistics
+            stats.field_types[field_name] = field_types[field_name];
+            stats.field_presence_ratio[field_name] = presence_ratio;
+            if (!required) stats.optional_fields++;
+            if (field.constraints.has_value()) {
+                const Map* constraints = std::get_if<Map>(&field.constraints.value());
+                if (constraints && constraints->find("enum") != constraints->end()) {
+                    stats.enum_fields++;
+                }
+            }
+        }
+        
+        stats.samples_analyzed = sample_count;
+        stats.fields_discovered = field_values.size();
+        
+        return std::move(*builder.build());
+    }
+};
+
+SchemaInferrer::SchemaInferrer(const InferenceOptions& options)
+    : pimpl_(std::make_unique<SchemaInferrerImpl>(options)) {}
+
+SchemaInferrer::~SchemaInferrer() = default;
+
+SchemaInferrer::SchemaInferrer(SchemaInferrer&&) noexcept = default;
+SchemaInferrer& SchemaInferrer::operator=(SchemaInferrer&&) noexcept = default;
+
+Schema SchemaInferrer::infer(const Value& value, const std::string& name) {
+    if (const Map* map = std::get_if<Map>(&value)) {
+        return pimpl_->inferFromMap(*map, name);
+    } else if (const Array* array = std::get_if<Array>(&value)) {
+        return inferFromArray(*array, name);
+    } else {
+        // For primitive values, create a single-field schema
+        SchemaBuilder builder(name);
+        builder.version(1, 0, 0);
+        builder.field("value", pimpl_->inferType(value));
+        pimpl_->stats.samples_analyzed = 1;
+        pimpl_->stats.fields_discovered = 1;
+        return std::move(*builder.build());
+    }
+}
+
+Schema SchemaInferrer::inferFromArray(const Array& array, const std::string& name) {
+    if (array.empty()) {
+        return Schema(name, SchemaVersion{1, 0, 0}, {});
+    }
+    
+    // Check if it's an array of maps (tabular data)
+    bool all_maps = true;
+    for (const auto& item : array) {
+        if (!std::holds_alternative<Map>(item)) {
+            all_maps = false;
+            break;
+        }
+    }
+    
+    if (all_maps) {
+        return pimpl_->inferFromArrayOfMaps(array, name);
+    } else {
+        // Infer schema for array of primitives or mixed types
+        std::set<std::string> item_types;
+        std::vector<Value> sample_values;
+        
+        size_t count = 0;
+        for (const auto& item : array) {
+            if (count >= pimpl_->options.sample_size) break;
+            item_types.insert(pimpl_->inferType(item));
+            sample_values.push_back(item);
+            count++;
+        }
+        
+        SchemaBuilder builder(name);
+        builder.version(1, 0, 0);
+        
+        // Create a schema with an "items" field representing the array element type
+        std::string item_type = item_types.size() == 1 ? *item_types.begin() : "any";
+        SchemaField items_field{"items", item_type, true, std::nullopt, std::nullopt, 
+                               pimpl_->inferConstraints(sample_values, item_type)};
+        builder.field(items_field);
+        
+        pimpl_->stats.samples_analyzed = count;
+        pimpl_->stats.fields_discovered = 1;
+        
+        return std::move(*builder.build());
+    }
+}
+
+Schema SchemaInferrer::merge(std::vector<Schema>&& schemas, const std::string& name) {
+    if (schemas.empty()) {
+        return Schema(name, SchemaVersion{1, 0, 0}, {});
+    }
+    
+    if (schemas.size() == 1) {
+        // Return a copy of the single schema with a new name
+        SchemaBuilder builder(name);
+        builder.version(schemas[0].getVersion());
+        for (const auto& field : schemas[0].getFields()) {
+            builder.field(field);
+        }
+        return std::move(*builder.build());
+    }
+    
+    // Merge fields from all schemas
+    std::unordered_map<std::string, SchemaField> merged_fields;
+    std::unordered_map<std::string, size_t> field_count;
+    
+    for (const auto& schema : schemas) {
+        for (const auto& field : schema.getFields()) {
+            field_count[field.name]++;
+            
+            if (merged_fields.find(field.name) == merged_fields.end()) {
+                merged_fields[field.name] = field;
+            } else {
+                // Merge field definitions
+                auto& existing = merged_fields[field.name];
+                
+                // Make field optional if not present in all schemas
+                if (field_count[field.name] < schemas.size()) {
+                    existing.required = false;
+                }
+                
+                // Merge types if different
+                if (existing.type != field.type) {
+                    if (pimpl_->options.merge_numeric_types &&
+                        ((existing.type == "int" || existing.type == "uint" || existing.type == "float" || existing.type == "number") &&
+                         (field.type == "int" || field.type == "uint" || field.type == "float"))) {
+                        existing.type = "number";
+                    } else {
+                        existing.type = "any";
+                    }
+                }
+                
+                // TODO: Merge constraints intelligently
+            }
+        }
+    }
+    
+    // Build merged schema
+    SchemaBuilder builder(name);
+    builder.version(1, 0, 0);
+    
+    for (const auto& [field_name, field] : merged_fields) {
+        // Make field optional if not in all schemas
+        SchemaField merged_field = field;
+        if (field_count[field_name] < schemas.size()) {
+            merged_field.required = false;
+        }
+        builder.field(merged_field);
+    }
+    
+    return std::move(*builder.build());
+}
+
+SchemaInferrer::Statistics SchemaInferrer::getStatistics() const {
+    return pimpl_->stats;
+}
+
+// Convenience function
+Schema inferSchema(const Value& value, const InferenceOptions& options) {
+    SchemaInferrer inferrer(options);
+    return inferrer.infer(value);
 }
 
 } // namespace btoon
