@@ -98,9 +98,9 @@ Int Decoder::decodeInt(std::span<const uint8_t> buffer, size_t& pos) const {
     uint8_t marker = buffer[pos++];
     switch (marker) {
         case 0xd0: { check_overflow(pos, 1, buffer.size()); int8_t val; std::memcpy(&val, &buffer[pos], 1); pos += 1; return val; }
-        case 0xd1: { check_overflow(pos, 2, buffer.size()); int16_t val; std::memcpy(&val, &buffer[pos], 2); pos += 2; return ntohs(val); }
-        case 0xd2: { check_overflow(pos, 4, buffer.size()); int32_t val; std::memcpy(&val, &buffer[pos], 4); pos += 4; return ntohl(val); }
-        case 0xd3: { check_overflow(pos, 8, buffer.size()); int64_t val; std::memcpy(&val, &buffer[pos], 8); pos += 8; return ntohll(val); }
+        case 0xd1: { check_overflow(pos, 2, buffer.size()); uint16_t val_be; std::memcpy(&val_be, &buffer[pos], 2); pos += 2; return static_cast<int16_t>(ntohs(val_be)); }
+        case 0xd2: { check_overflow(pos, 4, buffer.size()); uint32_t val_be; std::memcpy(&val_be, &buffer[pos], 4); pos += 4; return static_cast<int32_t>(ntohl(val_be)); }
+        case 0xd3: { check_overflow(pos, 8, buffer.size()); uint64_t val_be; std::memcpy(&val_be, &buffer[pos], 8); pos += 8; return static_cast<int64_t>(ntohll(val_be)); }
         default: throw BtoonException("Invalid signed integer marker");
     }
 }
