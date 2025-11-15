@@ -15,7 +15,7 @@ option(BUILD_SHARED_LIBS "Build shared library" OFF)
 option(BUILD_TESTS "Build tests" ON)
 option(BUILD_BENCHMARKS "Build benchmarks" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
-option(BUILD_TOOLS "Build CLI tools" OFF)
+option(BUILD_TOOLS "Build CLI tools" ON)
 option(ENABLE_SANITIZERS "Enable sanitizers (ASan, MSan, UBSan)" OFF)
 option(ENABLE_FUZZING "Enable fuzzing support" OFF)
 option(ENABLE_COVERAGE "Enable code coverage" OFF)
@@ -252,13 +252,21 @@ if(BUILD_BENCHMARKS)
     )
 endif()
 
-# CLI tool
+# CLI tools
 if(BUILD_TOOLS)
+    # btoon CLI tool
     add_executable(btoon tools/btooncli.cpp)
     target_include_directories(btoon PRIVATE include/third_party)
     target_link_libraries(btoon btoon_core)
     install(TARGETS btoon RUNTIME DESTINATION bin)
     install(FILES docs/btoon.1 DESTINATION share/man/man1)
+    
+    # btoon-schema compiler tool
+    add_executable(btoon-schema tools/btoon-schema.cpp)
+    target_include_directories(btoon-schema PRIVATE include/third_party)
+    target_link_libraries(btoon-schema btoon_core)
+    target_compile_features(btoon-schema PRIVATE cxx_std_17) # For filesystem
+    install(TARGETS btoon-schema RUNTIME DESTINATION bin)
 endif()
 
 # Installation
