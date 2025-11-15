@@ -8,15 +8,12 @@ void Security::setSecretKey(const std::string& key) {
     secretKey_ = key;
 }
 
-std::vector<uint8_t> Security::sign(const std::vector<uint8_t>& data) const {
-    if (secretKey_.empty()) {
-        throw BtoonException("No secret key set for HMAC signing");
-    }
-    unsigned char hmac[SHA256_DIGEST_LENGTH];
-    unsigned int len = SHA256_DIGEST_LENGTH;
-    HMAC(EVP_sha256(), secretKey_.data(), secretKey_.size(), 
-         data.data(), data.size(), hmac, &len);
-    return std::vector<uint8_t>(hmac, hmac + len);
+std::vector<uint8_t> Security::sign(std::span<const uint8_t> data) const {
+    unsigned char md[EVP_MAX_MD_SIZE];
+    unsigned int md_len;
+    HMAC(EVP_sha256(), secretKey_.data(), secretKey_.size(),
+         data.data(), data.size(), md, &md_len);
+    return {md, md + md_len};
 }
 
 bool Security::verify(const std::vector<uint8_t>& data, const std::vector<uint8_t>& signature) const {

@@ -1,6 +1,10 @@
 #include "btoon/encoder.h"
 #include <algorithm>
+#include <stdexcept>
 #include <cstring>
+#include <arpa/inet.h>
+#include <iostream>
+
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
 #elif defined(__ARM_NEON)
@@ -9,124 +13,207 @@
 
 namespace btoon {
 
+void Encoder::grow_buffer(size_t needed) {
+    if (size_ + needed > capacity_) {
+        size_t new_capacity = capacity_ == 0 ? 1024 : capacity_ * 2;
+        if (new_capacity < size_ + needed) {
+            new_capacity = size_ + needed;
+        }
+        uint8_t* new_buffer = static_cast<uint8_t*>(pool_->allocate(new_capacity));
+        if (buffer_) {
+            std::memcpy(new_buffer, buffer_, size_);
+            pool_->deallocate(buffer_, capacity_);
+        }
+        buffer_ = new_buffer;
+        capacity_ = new_capacity;
+    }
+}
 
+Encoder::Encoder() : pool_(new MemoryPool()), owns_pool_(true) {}
+
+Encoder::Encoder(MemoryPool* pool) : pool_(pool), owns_pool_(false) {}
+
+Encoder::Encoder(const Security& security) : security_(&security), useSecurity_(true), pool_(new MemoryPool()), owns_pool_(true) {}
+
+Encoder::Encoder(const Security& security, MemoryPool* pool) : security_(&security), useSecurity_(true), pool_(pool), owns_pool_(false) {}
+
+Encoder::~Encoder() {
+    if (owns_pool_) {
+        delete pool_;
+    }
+}
 
 std::span<const uint8_t> Encoder::getBuffer() {
     addSignatureIfEnabled();
-    return buffer_;
+    return {buffer_, size_};
 }
 
 void Encoder::encodeNil() {
-    buffer_.push_back(0xc0);
+    grow_buffer(1);
+    buffer_[size_++] = 0xc0;
 }
 
 void Encoder::encodeBool(bool value) {
-    buffer_.push_back(static_cast<uint8_t>(value ? 0xc3 : 0xc2));
+    grow_buffer(1);
+    buffer_[size_++] = static_cast<uint8_t>(value ? 0xc3 : 0xc2);
 }
 
 void Encoder::encodeInt(int64_t value) {
     if (value >= -32 && value <= 127) {
-        buffer_.push_back(static_cast<uint8_t>(value));
+        grow_buffer(1);
+        buffer_[size_++] = static_cast<uint8_t>(value);
     } else if (value >= -128 && value <= 127) {
-        buffer_.push_back(0xd0);
-        buffer_.push_back(static_cast<uint8_t>(value));
+        grow_buffer(2);
+        buffer_[size_++] = 0xd0;
+        buffer_[size_++] = static_cast<uint8_t>(value);
     } else if (value >= -32768 && value <= 32767) {
-        buffer_.push_back(0xd1);
-        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&value), reinterpret_cast<uint8_t*>(&value) + 2);
+        grow_buffer(3);
+        buffer_[size_++] = 0xd1;
+        std::memcpy(buffer_ + size_, &value, 2);
+        size_ += 2;
     } else if (value >= -2147483648LL && value <= 2147483647LL) {
-        buffer_.push_back(0xd2);
-        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&value), reinterpret_cast<uint8_t*>(&value) + 4);
+        grow_buffer(5);
+        buffer_[size_++] = 0xd2;
+        std::memcpy(buffer_ + size_, &value, 4);
+        size_ += 4;
     } else {
-        buffer_.push_back(0xd3);
-        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&value), reinterpret_cast<uint8_t*>(&value) + 8);
+        grow_buffer(9);
+        buffer_[size_++] = 0xd3;
+        std::memcpy(buffer_ + size_, &value, 8);
+        size_ += 8;
     }
 }
 
 void Encoder::encodeUint(uint64_t value) {
     if (value <= 127) {
-        buffer_.push_back(static_cast<uint8_t>(value));
+        grow_buffer(1);
+        buffer_[size_++] = static_cast<uint8_t>(value);
     } else if (value <= 255) {
-        buffer_.push_back(0xcc);
-        buffer_.push_back(static_cast<uint8_t>(value));
+        grow_buffer(2);
+        buffer_[size_++] = 0xcc;
+        buffer_[size_++] = static_cast<uint8_t>(value);
     } else if (value <= 65535) {
-        buffer_.push_back(0xcd);
-        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&value), reinterpret_cast<uint8_t*>(&value) + 2);
+        grow_buffer(3);
+        buffer_[size_++] = 0xcd;
+        std::memcpy(buffer_ + size_, &value, 2);
+        size_ += 2;
     } else if (value <= 4294967295ULL) {
-        buffer_.push_back(0xce);
-        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&value), reinterpret_cast<uint8_t*>(&value) + 4);
+        grow_buffer(5);
+        buffer_[size_++] = 0xce;
+        std::memcpy(buffer_ + size_, &value, 4);
+        size_ += 4;
     } else {
-        buffer_.push_back(0xcf);
-        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&value), reinterpret_cast<uint8_t*>(&value) + 8);
+        grow_buffer(9);
+        buffer_[size_++] = 0xcf;
+        std::memcpy(buffer_ + size_, &value, 8);
+        size_ += 8;
     }
 }
 
 void Encoder::encodeFloat(double value) {
-    buffer_.push_back(0xcb);
-    buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&value), reinterpret_cast<uint8_t*>(&value) + 8);
+    grow_buffer(9);
+    buffer_[size_++] = 0xcb;
+    std::memcpy(buffer_ + size_, &value, 8);
+    size_ += 8;
 }
 
 void Encoder::encodeString(const std::string& value) {
     size_t len = value.size();
     if (len <= 31) {
-        buffer_.push_back(static_cast<uint8_t>(0xa0 | len));
+        grow_buffer(1 + len);
+        buffer_[size_++] = static_cast<uint8_t>(0xa0 | len);
     } else if (len <= 255) {
-        buffer_.push_back(0xd9);
-        buffer_.push_back(static_cast<uint8_t>(len));
+        grow_buffer(2 + len);
+        buffer_[size_++] = 0xd9;
+        buffer_[size_++] = static_cast<uint8_t>(len);
     } else if (len <= 65535) {
-        buffer_.push_back(0xda);
-        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 2);
+        grow_buffer(3 + len);
+        buffer_[size_++] = 0xda;
+        uint16_t be_len = htons(static_cast<uint16_t>(len));
+        std::memcpy(buffer_ + size_, &be_len, 2);
+        size_ += 2;
     } else {
-        buffer_.push_back(0xdb);
-        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 4);
+        grow_buffer(5 + len);
+        buffer_[size_++] = 0xdb;
+        uint32_t be_len = htonl(static_cast<uint32_t>(len));
+        std::memcpy(buffer_ + size_, &be_len, 4);
+        size_ += 4;
     }
-    buffer_.insert(buffer_.end(), value.begin(), value.end());
+    std::memcpy(buffer_ + size_, value.data(), len);
+    size_ += len;
 }
 
 void Encoder::encodeBinary(std::span<const uint8_t> value) {
     size_t len = value.size();
     if (len <= 255) {
-        buffer_.push_back(0xc4);
-        buffer_.push_back(static_cast<uint8_t>(len));
+        grow_buffer(2 + len);
+        buffer_[size_++] = 0xc4;
+        buffer_[size_++] = static_cast<uint8_t>(len);
     } else if (len <= 65535) {
-        buffer_.push_back(0xc5);
-        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 2);
+        grow_buffer(3 + len);
+        buffer_[size_++] = 0xc5;
+        uint16_t be_len = htons(static_cast<uint16_t>(len));
+        std::memcpy(buffer_ + size_, &be_len, 2);
+        size_ += 2;
     } else {
-        buffer_.push_back(0xc6);
-        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 4);
+        grow_buffer(5 + len);
+        buffer_[size_++] = 0xc6;
+        uint32_t be_len = htonl(static_cast<uint32_t>(len));
+        std::memcpy(buffer_ + size_, &be_len, 4);
+        size_ += 4;
     }
-    buffer_.insert(buffer_.end(), value.begin(), value.end());
+    std::memcpy(buffer_ + size_, value.data(), len);
+    size_ += len;
 }
 
 void Encoder::encodeArray(const std::vector<std::vector<uint8_t>>& elements) {
     size_t len = elements.size();
     if (len <= 15) {
-        buffer_.push_back(static_cast<uint8_t>(0x90 | len));
+        grow_buffer(1);
+        buffer_[size_++] = static_cast<uint8_t>(0x90 | len);
     } else if (len <= 65535) {
-        buffer_.push_back(0xdc);
-        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 2);
+        grow_buffer(3);
+        buffer_[size_++] = 0xdc;
+        uint16_t be_len = htons(static_cast<uint16_t>(len));
+        std::memcpy(buffer_ + size_, &be_len, 2);
+        size_ += 2;
     } else {
-        buffer_.push_back(0xdd);
-        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 4);
+        grow_buffer(5);
+        buffer_[size_++] = 0xdd;
+        uint32_t be_len = htonl(static_cast<uint32_t>(len));
+        std::memcpy(buffer_ + size_, &be_len, 4);
+        size_ += 4;
     }
     for (const auto& elem : elements) {
-        buffer_.insert(buffer_.end(), elem.begin(), elem.end());
+        grow_buffer(elem.size());
+        std::memcpy(buffer_ + size_, elem.data(), elem.size());
+        size_ += elem.size();
     }
 }
 
 void Encoder::encodeMap(const std::map<std::string, std::vector<uint8_t>>& pairs) {
     size_t len = pairs.size();
     if (len <= 15) {
-        buffer_.push_back(static_cast<uint8_t>(0x80 | len));
+        grow_buffer(1);
+        buffer_[size_++] = static_cast<uint8_t>(0x80 | len);
     } else if (len <= 65535) {
-        buffer_.push_back(0xde);
-        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 2);
+        grow_buffer(3);
+        buffer_[size_++] = 0xde;
+        uint16_t be_len = htons(static_cast<uint16_t>(len));
+        std::memcpy(buffer_ + size_, &be_len, 2);
+        size_ += 2;
     } else {
-        buffer_.push_back(0xdf);
-        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 4);
+        grow_buffer(5);
+        buffer_[size_++] = 0xdf;
+        uint32_t be_len = htonl(static_cast<uint32_t>(len));
+        std::memcpy(buffer_ + size_, &be_len, 4);
+        size_ += 4;
     }
     for (const auto& pair : pairs) {
         encodeString(pair.first);
-        buffer_.insert(buffer_.end(), pair.second.begin(), pair.second.end());
+        grow_buffer(pair.second.size());
+        std::memcpy(buffer_ + size_, pair.second.data(), pair.second.size());
+        size_ += pair.second.size();
     }
 }
 
@@ -156,25 +243,41 @@ void Encoder::encodeVectorDouble(const VectorDouble& value) {
 
 void Encoder::encodeExtension(int8_t type, std::span<const uint8_t> data) {
     size_t len = data.size();
-    if (len == 1) buffer_.push_back(0xd4);
-    else if (len == 2) buffer_.push_back(0xd5);
-    else if (len == 4) buffer_.push_back(0xd6);
-    else if (len == 8) buffer_.push_back(0xd7);
-    else if (len == 16) buffer_.push_back(0xd8);
-    else if (len <= 255) {
-        buffer_.push_back(0xc7);
-        buffer_.push_back(static_cast<uint8_t>(len));
+    if (len == 1) {
+        grow_buffer(2);
+        buffer_[size_++] = 0xd4;
+    } else if (len == 2) {
+        grow_buffer(3);
+        buffer_[size_++] = 0xd5;
+    } else if (len == 4) {
+        grow_buffer(5);
+        buffer_[size_++] = 0xd6;
+    } else if (len == 8) {
+        grow_buffer(9);
+        buffer_[size_++] = 0xd7;
+    } else if (len == 16) {
+        grow_buffer(17);
+        buffer_[size_++] = 0xd8;
+    } else if (len <= 255) {
+        grow_buffer(2 + len);
+        buffer_[size_++] = 0xc7;
+        buffer_[size_++] = static_cast<uint8_t>(len);
     } else if (len <= 65535) {
-        buffer_.push_back(0xc8);
+        grow_buffer(3 + len);
+        buffer_[size_++] = 0xc8;
         uint16_t be_len = htons(static_cast<uint16_t>(len));
-        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&be_len), reinterpret_cast<uint8_t*>(&be_len) + 2);
+        std::memcpy(buffer_ + size_, &be_len, 2);
+        size_ += 2;
     } else {
-        buffer_.push_back(0xc9);
+        grow_buffer(5 + len);
+        buffer_[size_++] = 0xc9;
         uint32_t be_len = htonl(static_cast<uint32_t>(len));
-        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&be_len), reinterpret_cast<uint8_t*>(&be_len) + 4);
+        std::memcpy(buffer_ + size_, &be_len, 4);
+        size_ += 4;
     }
-    buffer_.push_back(static_cast<uint8_t>(type));
-    buffer_.insert(buffer_.end(), data.begin(), data.end());
+    buffer_[size_++] = static_cast<uint8_t>(type);
+    std::memcpy(buffer_ + size_, data.data(), len);
+    size_ += len;
 }
 
 void Encoder::encodeColumnar(const Array& data) {
@@ -197,52 +300,145 @@ void Encoder::encodeColumnar(const Array& data) {
     }
     std::sort(column_names.begin(), column_names.end());
 
-    std::vector<uint8_t> schema_bytes;
-    // version
-    schema_bytes.push_back(0); schema_bytes.push_back(0); schema_bytes.push_back(0); schema_bytes.push_back(1);
-    // num_columns
-    uint32_t num_columns = htonl(column_names.size());
-    schema_bytes.insert(schema_bytes.end(), reinterpret_cast<uint8_t*>(&num_columns), reinterpret_cast<uint8_t*>(&num_columns) + 4);
+        std::vector<uint8_t> schema_bytes;
 
-    for (const auto& name : column_names) {
-        uint32_t name_len = htonl(name.length());
-        schema_bytes.insert(schema_bytes.end(), reinterpret_cast<uint8_t*>(&name_len), reinterpret_cast<uint8_t*>(&name_len) + 4);
-        schema_bytes.insert(schema_bytes.end(), name.begin(), name.end());
-    }
+        // version
 
-    for (const auto& name : column_names) {
-        const auto& val = (*first_row).at(name);
-        std::visit([&](auto&& arg) {
-            using T = std::decay_t<decltype(arg)>;
-            if constexpr (std::is_same_v<T, Nil>) schema_bytes.push_back(0);
-            else if constexpr (std::is_same_v<T, Bool>) schema_bytes.push_back(1);
-            else if constexpr (std::is_same_v<T, Int>) schema_bytes.push_back(2);
-            else if constexpr (std::is_same_v<T, Uint>) schema_bytes.push_back(3);
-            else if constexpr (std::is_same_v<T, Float>) schema_bytes.push_back(4);
-            else if constexpr (std::is_same_v<T, String>) schema_bytes.push_back(5);
-            else schema_bytes.push_back(0); // Default to unknown
-        }, val);
-    }
+        schema_bytes.push_back(0); schema_bytes.push_back(0); schema_bytes.push_back(0); schema_bytes.push_back(1);
 
-    std::vector<uint8_t> rows_bytes;
-    uint32_t num_rows = htonl(data.size());
-    rows_bytes.insert(rows_bytes.end(), reinterpret_cast<uint8_t*>(&num_rows), reinterpret_cast<uint8_t*>(&num_rows) + 4);
+        // num_columns
 
-    for (const auto& row_value : data) {
-        const auto* row = std::get_if<Map>(&row_value);
-        for (const auto& name : column_names) {
-            Encoder temp_encoder;
-            temp_encoder.encode((*row).at(name));
-            auto buf = temp_encoder.getBuffer();
-            rows_bytes.insert(rows_bytes.end(), buf.begin(), buf.end());
-        }
-    }
+        uint32_t num_columns_val = column_names.size();
+
+        schema_bytes.push_back(static_cast<uint8_t>((num_columns_val >> 24) & 0xFF));
+
+        schema_bytes.push_back(static_cast<uint8_t>((num_columns_val >> 16) & 0xFF));
+
+        schema_bytes.push_back(static_cast<uint8_t>((num_columns_val >> 8) & 0xFF));
+
+        schema_bytes.push_back(static_cast<uint8_t>(num_columns_val & 0xFF));
+
+        // num_rows
+
+        uint32_t num_rows_val = data.size();
+
+        schema_bytes.push_back(static_cast<uint8_t>((num_rows_val >> 24) & 0xFF));
+
+        schema_bytes.push_back(static_cast<uint8_t>((num_rows_val >> 16) & 0xFF));
+
+        schema_bytes.push_back(static_cast<uint8_t>((num_rows_val >> 8) & 0xFF));
+
+        schema_bytes.push_back(static_cast<uint8_t>(num_rows_val & 0xFF));
+
     
-    std::vector<uint8_t> combined_bytes;
-    combined_bytes.insert(combined_bytes.end(), schema_bytes.begin(), schema_bytes.end());
-    combined_bytes.insert(combined_bytes.end(), rows_bytes.begin(), rows_bytes.end());
 
-    encodeExtension(-10, combined_bytes);
+        for (const auto& name : column_names) {
+
+            uint32_t name_len = name.length();
+
+            schema_bytes.push_back(static_cast<uint8_t>((name_len >> 24) & 0xFF));
+
+            schema_bytes.push_back(static_cast<uint8_t>((name_len >> 16) & 0xFF));
+
+            schema_bytes.push_back(static_cast<uint8_t>((name_len >> 8) & 0xFF));
+
+            schema_bytes.push_back(static_cast<uint8_t>(name_len & 0xFF));
+
+            schema_bytes.insert(schema_bytes.end(), name.begin(), name.end());
+
+        }
+
+    
+
+        for (const auto& name : column_names) {
+
+            const auto& val = (*first_row).at(name);
+
+            std::visit([&](auto&& arg) {
+
+                using T = std::decay_t<decltype(arg)>;
+
+                if constexpr (std::is_same_v<T, Nil>) schema_bytes.push_back(0);
+
+                else if constexpr (std::is_same_v<T, Bool>) schema_bytes.push_back(1);
+
+                else if constexpr (std::is_same_v<T, Int>) schema_bytes.push_back(2);
+
+                else if constexpr (std::is_same_v<T, Uint>) schema_bytes.push_back(3);
+
+                else if constexpr (std::is_same_v<T, Float>) schema_bytes.push_back(4);
+
+                else if constexpr (std::is_same_v<T, String>) schema_bytes.push_back(5);
+
+                else schema_bytes.push_back(0); // Default to unknown
+
+            }, val);
+
+        }
+
+    
+
+        std::vector<uint8_t> columns_data_bytes;
+
+        for (const auto& name : column_names) {
+
+            std::vector<uint8_t> column_data;
+
+            for (const auto& row_value : data) {
+
+                const auto* row = std::get_if<Map>(&row_value);
+
+                Encoder temp_encoder(pool_); // Uses the main pool, no security
+
+                temp_encoder.encode((*row).at(name));
+
+                auto buf = temp_encoder.getBuffer();
+
+                column_data.insert(column_data.end(), buf.begin(), buf.end());
+
+            }
+
+            std::cout << "Encoder: Column '" << name << "' raw data size: " << column_data.size() << std::endl;
+
+            // For debugging: print raw column_data
+
+            std::cout << "Encoder: Column '" << name << "' raw data: ";
+
+            for (uint8_t byte : column_data) {
+
+                std::cout << std::hex << static_cast<int>(byte) << " ";
+
+            }
+
+            std::cout << std::dec << std::endl;
+
+    
+
+            uint32_t column_data_size_val = column_data.size();
+
+            columns_data_bytes.push_back(static_cast<uint8_t>((column_data_size_val >> 24) & 0xFF));
+
+            columns_data_bytes.push_back(static_cast<uint8_t>((column_data_size_val >> 16) & 0xFF));
+
+            columns_data_bytes.push_back(static_cast<uint8_t>((column_data_size_val >> 8) & 0xFF));
+
+            columns_data_bytes.push_back(static_cast<uint8_t>(column_data_size_val & 0xFF));
+
+            columns_data_bytes.insert(columns_data_bytes.end(), column_data.begin(), column_data.end());
+
+        }
+
+        
+
+        std::vector<uint8_t> combined_bytes;
+
+        combined_bytes.insert(combined_bytes.end(), schema_bytes.begin(), schema_bytes.end());
+
+        combined_bytes.insert(combined_bytes.end(), columns_data_bytes.begin(), columns_data_bytes.end());
+
+    
+
+        encodeExtension(-10, combined_bytes);
 }
 
 void Encoder::encode(const Value& value) {
@@ -292,13 +488,17 @@ void Encoder::encode(const Value& value) {
 
 void Encoder::addSignatureIfEnabled() {
     if (useSecurity_ && security_ != nullptr) {
-        auto signature = security_->sign(buffer_);
-        std::vector<uint8_t> signedData;
+        auto signature = security_->sign({buffer_, size_});
         uint8_t sigLen = static_cast<uint8_t>(signature.size());
-        signedData.push_back(sigLen);
-        signedData.insert(signedData.end(), signature.begin(), signature.end());
-        signedData.insert(signedData.end(), buffer_.begin(), buffer_.end());
-        buffer_ = signedData;
+        size_t new_size = 1 + sigLen + size_;
+        uint8_t* new_buffer = static_cast<uint8_t*>(pool_->allocate(new_size));
+        new_buffer[0] = sigLen;
+        std::memcpy(new_buffer + 1, signature.data(), sigLen);
+        std::memcpy(new_buffer + 1 + sigLen, buffer_, size_);
+        pool_->deallocate(buffer_, capacity_);
+        buffer_ = new_buffer;
+        size_ = new_size;
+        capacity_ = new_size;
     }
 }
 

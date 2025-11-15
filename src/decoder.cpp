@@ -3,12 +3,28 @@
 #include <cstring>
 #include <stdexcept>
 #include <arpa/inet.h>
+#include <iostream>
 
 namespace btoon {
 
 static void check_overflow(size_t pos, size_t count, size_t buffer_size) {
+    std::cout << "check_overflow: pos=" << pos << ", count=" << count << ", buffer_size=" << buffer_size << std::endl;
     if (pos + count > buffer_size) {
         throw BtoonException("Decoder overflow");
+    }
+}
+
+Decoder::Decoder() : pool_(new MemoryPool()), owns_pool_(true) {}
+
+Decoder::Decoder(MemoryPool* pool) : pool_(pool), owns_pool_(false) {}
+
+Decoder::Decoder(const Security& security) : security_(&security), useSecurity_(true), pool_(new MemoryPool()), owns_pool_(true) {}
+
+Decoder::Decoder(const Security& security, MemoryPool* pool) : security_(&security), useSecurity_(true), pool_(pool), owns_pool_(false) {}
+
+Decoder::~Decoder() {
+    if (owns_pool_) {
+        delete pool_;
     }
 }
 
@@ -114,9 +130,10 @@ String Decoder::decodeString(std::span<const uint8_t> buffer, size_t& pos) const
     else if (marker == 0xdb) { check_overflow(pos, 4, buffer.size()); uint32_t l; std::memcpy(&l, &buffer[pos], 4); len = ntohl(l); pos += 4; }
     else { throw BtoonException("Invalid string marker"); }
     check_overflow(pos, len, buffer.size());
-    String str(reinterpret_cast<const char*>(&buffer[pos]), len);
+    char* str_data = static_cast<char*>(pool_->allocate(len));
+    std::memcpy(str_data, &buffer[pos], len);
     pos += len;
-    return str;
+    return String(str_data, len);
 }
 
 Binary Decoder::decodeBinary(std::span<const uint8_t> buffer, size_t& pos) const {
@@ -127,10 +144,10 @@ Binary Decoder::decodeBinary(std::span<const uint8_t> buffer, size_t& pos) const
     else if (marker == 0xc6) { check_overflow(pos, 4, buffer.size()); uint32_t l; std::memcpy(&l, &buffer[pos], 4); len = ntohl(l); pos += 4; }
     else { throw BtoonException("Invalid binary marker"); }
     check_overflow(pos, len, buffer.size());
-    auto sub = buffer.subspan(pos, len);
-    Binary bin(sub.begin(), sub.end());
+    uint8_t* bin_data = static_cast<uint8_t*>(pool_->allocate(len));
+    std::memcpy(bin_data, &buffer[pos], len);
     pos += len;
-    return bin;
+    return Binary(bin_data, bin_data + len);
 }
 
 Array Decoder::decodeArray(std::span<const uint8_t> buffer, size_t& pos) const {
@@ -181,40 +198,52 @@ Value Decoder::decodeExtension(std::span<const uint8_t> buffer, size_t& pos) con
 
     switch (ext_type) {
         case -10: { // Tabular data
+            size_t current_ext_data_pos = 0;
+
             // --- Header ---
-            uint32_t version;
-            std::memcpy(&version, &buffer[pos], 4);
-            version = ntohl(version);
-            pos += 4;
+            check_overflow(current_ext_data_pos, 4, len);
+            uint32_t version = (static_cast<uint32_t>(buffer[pos + current_ext_data_pos]) << 24) |
+                               (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 1]) << 16) |
+                               (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 2]) << 8) |
+                               (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 3]));
+            current_ext_data_pos += 4;
 
             if (version != 1) {
                 throw BtoonException("Unsupported tabular version");
             }
 
-            uint32_t num_columns;
-            std::memcpy(&num_columns, &buffer[pos], 4);
-            num_columns = ntohl(num_columns);
-            pos += 4;
+            check_overflow(current_ext_data_pos, 4, len);
+            uint32_t num_columns = (static_cast<uint32_t>(buffer[pos + current_ext_data_pos]) << 24) |
+                                   (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 1]) << 16) |
+                                   (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 2]) << 8) |
+                                   (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 3]));
+            current_ext_data_pos += 4;
 
-            uint32_t num_rows;
-            std::memcpy(&num_rows, &buffer[pos], 4);
-            num_rows = ntohl(num_rows);
-            pos += 4;
+            check_overflow(current_ext_data_pos, 4, len);
+            uint32_t num_rows = (static_cast<uint32_t>(buffer[pos + current_ext_data_pos]) << 24) |
+                                (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 1]) << 16) |
+                                (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 2]) << 8) |
+                                (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 3]));
+            current_ext_data_pos += 4;
 
             // --- Schema Section ---
             std::vector<std::string> column_names;
             std::vector<uint8_t> column_types;
             for (uint32_t i = 0; i < num_columns; ++i) {
-                uint32_t name_len;
-                std::memcpy(&name_len, &buffer[pos], 4);
-                name_len = ntohl(name_len);
-                pos += 4;
+                check_overflow(current_ext_data_pos, 4, len);
+                uint32_t name_len = (static_cast<uint32_t>(buffer[pos + current_ext_data_pos]) << 24) |
+                                    (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 1]) << 16) |
+                                    (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 2]) << 8) |
+                                    (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 3]));
+                current_ext_data_pos += 4;
 
-                column_names.emplace_back(reinterpret_cast<const char*>(&buffer[pos]), name_len);
-                pos += name_len;
+                check_overflow(current_ext_data_pos, name_len, len);
+                column_names.emplace_back(reinterpret_cast<const char*>(&buffer[pos + current_ext_data_pos]), name_len);
+                current_ext_data_pos += name_len;
 
-                column_types.push_back(buffer[pos]);
-                pos += 1;
+                check_overflow(current_ext_data_pos, 1, len);
+                column_types.push_back(buffer[pos + current_ext_data_pos]);
+                current_ext_data_pos += 1;
             }
 
             // --- Data Section ---
@@ -224,20 +253,48 @@ Value Decoder::decodeExtension(std::span<const uint8_t> buffer, size_t& pos) con
             }
 
             for (uint32_t i = 0; i < num_columns; ++i) {
-                uint32_t column_len;
-                std::memcpy(&column_len, &buffer[pos], 4);
-                column_len = ntohl(column_len);
-                pos += 4;
+                check_overflow(current_ext_data_pos, 4, len);
+                uint32_t column_data_size = (static_cast<uint32_t>(buffer[pos + current_ext_data_pos]) << 24) |
+                                            (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 1]) << 16) |
+                                            (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 2]) << 8) |
+                                            (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 3]));
+                current_ext_data_pos += 4;
 
-                size_t column_data_start = pos;
+                std::cout << "Decoder: Column '" << column_names[i] << "' expected data size: " << column_data_size << std::endl;
+
+                size_t column_data_start_in_ext = current_ext_data_pos;
+                // Create a sub-span for the current column's data to decode from
+                std::span<const uint8_t> column_buffer = buffer.subspan(pos + column_data_start_in_ext, column_data_size);
+                std::cout << "Decoder: Column '" << column_names[i] << "' actual buffer size: " << column_buffer.size() << std::endl;
+                std::cout << "Decoder: Column '" << column_names[i] << "' buffer content: ";
+                for (uint8_t byte : column_buffer) {
+                    std::cout << std::hex << static_cast<int>(byte) << " ";
+                }
+                std::cout << std::dec << std::endl;
+
+                size_t sub_pos = 0;
                 for (uint32_t j = 0; j < num_rows; ++j) {
                     auto& row_map = std::get<Map>(arr[j]);
-                    Value decoded_value = decode(buffer, pos);
-                    // TODO: Validate type against schema (column_types[i])
+                    Value decoded_value;
+                    switch (column_types[i]) {
+                        case 0: decoded_value = decodeNil(sub_pos); break; // Nil
+                        case 1: decoded_value = decodeBool(column_buffer, sub_pos); break; // Bool
+                        case 2: decoded_value = decodeInt(column_buffer, sub_pos); break; // Int
+                        case 3: decoded_value = decodeUint(column_buffer, sub_pos); break; // Uint
+                        case 4: decoded_value = decodeFloat(column_buffer, sub_pos); break; // Float
+                        case 5: decoded_value = decodeString(column_buffer, sub_pos); break; // String
+                        default: decoded_value = decode(column_buffer, sub_pos); break; // Fallback to generic decode for unknown types
+                    }
                     row_map[column_names[i]] = decoded_value;
                 }
-                pos = column_data_start + column_len;
+                current_ext_data_pos += column_data_size; // Advance current_ext_data_pos by the total column data size
+
+                // Ensure we consumed exactly column_data_size bytes for this column
+                if (sub_pos != column_data_size) {
+                    throw BtoonException("Column data size mismatch during decoding");
+                }
             }
+            pos += len; // Advance the main position by the total length of the extension
             return arr;
         }
         case -1: { // Timestamp

@@ -31,8 +31,6 @@ std::vector<uint8_t> RleCodec::encode(const Array& data) {
                     encoder.encodeFloat(arg);
                 } else if constexpr (std::is_same_v<T, String>) {
                     encoder.encodeString(arg);
-                } else if constexpr (std::is_same_v<T, StringView>) {
-                    encoder.encodeString({arg.data(), arg.size()});
                 } else if constexpr (std::is_same_v<T, Binary>) {
                     encoder.encodeBinary(arg);
                 } else if constexpr (std::is_same_v<T, Extension>) {
@@ -41,8 +39,14 @@ std::vector<uint8_t> RleCodec::encode(const Array& data) {
                     encoder.encodeTimestamp(arg.seconds);
                 } else if constexpr (std::is_same_v<T, Date>) {
                     encoder.encodeDate(arg.milliseconds);
+                } else if constexpr (std::is_same_v<T, DateTime>) {
+                    encoder.encodeDateTime(arg.nanoseconds);
                 } else if constexpr (std::is_same_v<T, BigInt>) {
                     encoder.encodeBigInt(arg.bytes);
+                } else if constexpr (std::is_same_v<T, VectorFloat>) {
+                    encoder.encodeVectorFloat(arg);
+                } else if constexpr (std::is_same_v<T, VectorDouble>) {
+                    encoder.encodeVectorDouble(arg);
                 }
             }, last_value);
             encoder.encodeInt(run_length);
@@ -64,8 +68,6 @@ std::vector<uint8_t> RleCodec::encode(const Array& data) {
             encoder.encodeFloat(arg);
         } else if constexpr (std::is_same_v<T, String>) {
             encoder.encodeString(arg);
-        } else if constexpr (std::is_same_v<T, StringView>) {
-            encoder.encodeString({arg.data(), arg.size()});
         } else if constexpr (std::is_same_v<T, Binary>) {
             encoder.encodeBinary(arg);
         } else if constexpr (std::is_same_v<T, Extension>) {
@@ -74,8 +76,14 @@ std::vector<uint8_t> RleCodec::encode(const Array& data) {
             encoder.encodeTimestamp(arg.seconds);
         } else if constexpr (std::is_same_v<T, Date>) {
             encoder.encodeDate(arg.milliseconds);
+        } else if constexpr (std::is_same_v<T, DateTime>) {
+            encoder.encodeDateTime(arg.nanoseconds);
         } else if constexpr (std::is_same_v<T, BigInt>) {
             encoder.encodeBigInt(arg.bytes);
+        } else if constexpr (std::is_same_v<T, VectorFloat>) {
+            encoder.encodeVectorFloat(arg);
+        } else if constexpr (std::is_same_v<T, VectorDouble>) {
+            encoder.encodeVectorDouble(arg);
         }
     }, last_value);
     encoder.encodeInt(run_length);

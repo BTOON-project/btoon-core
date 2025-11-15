@@ -71,7 +71,7 @@ public:
      * @return A vector of bytes representing the HMAC signature.
      * @throws BtoonException if no secret key is set.
      */
-    std::vector<uint8_t> sign(const std::vector<uint8_t>& data) const;
+    std::vector<uint8_t> sign(std::span<const uint8_t> data) const;
 
     /**
      * @brief Verifies an HMAC signature for data integrity.

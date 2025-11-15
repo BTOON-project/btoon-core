@@ -25,10 +25,13 @@
 
 #include "btoon.h"
 #include "security.h"
+#include "memory_pool.h"
 #include <vector>
 #include <span>
 
 namespace btoon {
+
+class MemoryPool;
 
 /**
  * @brief Class responsible for decoding data from BTOON binary format.
@@ -42,18 +45,31 @@ public:
     /**
      * @brief Default constructor for Decoder.
      */
-    Decoder() = default;
-    
+    Decoder();
+
+    /**
+     * @brief Constructor with a memory pool.
+     * @param pool Pointer to a MemoryPool to use for allocations.
+     */
+    explicit Decoder(MemoryPool* pool);
+
     /**
      * @brief Constructor with security settings for HMAC verification.
      * @param security Reference to a Security object for verifying signatures.
      */
-    explicit Decoder(const Security& security) : security_(&security), useSecurity_(true) {}
+    explicit Decoder(const Security& security);
+
+    /**
+     * @brief Constructor with security settings and a memory pool.
+     * @param security Reference to a Security object for verifying signatures.
+     * @param pool Pointer to a MemoryPool to use for allocations.
+     */
+    Decoder(const Security& security, MemoryPool* pool);
     
     /**
      * @brief Default destructor for Decoder.
      */
-    ~Decoder() = default;
+    ~Decoder();
 
     /**
      * @brief Enables or disables security verification for decoded data.
@@ -100,6 +116,8 @@ private:
 
     const Security* security_ = nullptr; /**< Pointer to Security object for HMAC verification. */
     bool useSecurity_ = false;           /**< Flag to enable/disable security verification. */
+    MemoryPool* pool_;                   /**< Pointer to MemoryPool for allocations. */
+    bool owns_pool_ = false;             /**< Flag to indicate if the Decoder owns the MemoryPool. */
 };
 
 } // namespace btoon

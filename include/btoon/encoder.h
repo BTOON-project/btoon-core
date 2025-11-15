@@ -47,18 +47,31 @@ public:
     /**
      * @brief Default constructor for Encoder.
      */
-    Encoder() = default;
+    Encoder();
     
+    /**
+     * @brief Constructor with a memory pool.
+     * @param pool Pointer to a MemoryPool to use for allocations.
+     */
+    explicit Encoder(MemoryPool* pool);
+
     /**
      * @brief Constructor with security settings for HMAC signing.
      * @param security Reference to a Security object for signing encoded data.
      */
-    explicit Encoder(const Security& security) : security_(&security) {}
+    explicit Encoder(const Security& security);
+    
+    /**
+     * @brief Constructor with security settings and a memory pool.
+     * @param security Reference to a Security object for signing encoded data.
+     * @param pool Pointer to a MemoryPool to use for allocations.
+     */
+    Encoder(const Security& security, MemoryPool* pool);
     
     /**
      * @brief Default destructor for Encoder.
      */
-    ~Encoder() = default;
+    ~Encoder();
 
     /**
      * @brief Enables or disables security signing for encoded data.
@@ -162,12 +175,16 @@ private:
     // SIMD-accelerated memory copy
     void simd_copy(uint8_t* dst, const uint8_t* src, size_t size) const;
 
+    void grow_buffer(size_t needed);
+
     const Security* security_ = nullptr; /**< Pointer to Security object for HMAC signing. */
     bool useSecurity_ = false;           /**< Flag to enable/disable security signing. */
     MemoryPool* pool_ = nullptr;                   /**< Pointer to MemoryPool for allocations. */
     bool owns_pool_ = false;             /**< Flag to indicate if the Encoder owns the MemoryPool. */
     EncodeOptions options_;              /**< Encoding options for the encoder. */
-    std::vector<uint8_t> buffer_;        /**< Buffer for encoded data. */
+    uint8_t* buffer_ = nullptr;          /**< Buffer for encoded data. */
+    size_t capacity_ = 0;                /**< Capacity of the buffer. */
+    size_t size_ = 0;                    /**< Current size of the encoded data. */
 };
 
 } // namespace btoon
