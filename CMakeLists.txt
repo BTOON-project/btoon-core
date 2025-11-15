@@ -18,6 +18,7 @@ option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_TOOLS "Build CLI tools" ON)
 option(ENABLE_SANITIZERS "Enable sanitizers (ASan, MSan, UBSan)" OFF)
 option(ENABLE_FUZZING "Enable fuzzing support" OFF)
+option(BUILD_FUZZ_TESTS "Build fuzz testing targets" OFF)
 option(ENABLE_COVERAGE "Enable code coverage" OFF)
 
 # Compiler-specific options
@@ -109,6 +110,7 @@ set(BTOON_SOURCES
     src/stream_decoder.cpp
     src/schema.cpp
     src/memory_pool.cpp
+    src/validator.cpp
     src/delta_codec.cpp
     src/rle_codec.cpp
     src/dictionary_codec.cpp
@@ -206,6 +208,7 @@ if(BUILD_TESTS)
         tests/test_schema_inference.cpp
         tests/test_performance.cpp
         tests/test_compression_levels.cpp
+        tests/test_validator.cpp
     )
     target_link_libraries(btoon_tests
         PRIVATE
@@ -272,6 +275,22 @@ if(BUILD_TOOLS)
     target_link_libraries(btoon-convert btoon_core)
     target_compile_features(btoon-convert PRIVATE cxx_std_17) # For filesystem
     install(TARGETS btoon-convert RUNTIME DESTINATION bin)
+endif()
+
+# Fuzzing targets
+if(BUILD_FUZZ_TESTS)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # LibFuzzer setup
+        add_executable(fuzz_decoder fuzz/fuzz_decoder.cpp)
+        target_link_libraries(fuzz_decoder PRIVATE btoon_core)
+        target_compile_options(fuzz_decoder PRIVATE -fsanitize=fuzzer,address)
+        target_link_options(fuzz_decoder PRIVATE -fsanitize=fuzzer,address)
+        
+        # Create fuzzing corpus directory
+        file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/fuzz_corpus)
+    else()
+        message(WARNING "Fuzzing targets require Clang compiler for LibFuzzer support")
+    endif()
 endif()
 
 # Installation
