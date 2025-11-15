@@ -87,17 +87,22 @@ void Encoder::encodeInt(int64_t value) {
     } else if (value >= -32768 && value <= 32767) {
         grow_buffer(3);
         buffer_[size_++] = 0xd1;
-        std::memcpy(buffer_ + size_, &value, 2);
+        int16_t val16 = static_cast<int16_t>(value);
+        uint16_t be_val = hton16(static_cast<uint16_t>(val16));
+        std::memcpy(buffer_ + size_, &be_val, 2);
         size_ += 2;
     } else if (value >= -2147483648LL && value <= 2147483647LL) {
         grow_buffer(5);
         buffer_[size_++] = 0xd2;
-        std::memcpy(buffer_ + size_, &value, 4);
+        int32_t val32 = static_cast<int32_t>(value);
+        uint32_t be_val = hton32(static_cast<uint32_t>(val32));
+        std::memcpy(buffer_ + size_, &be_val, 4);
         size_ += 4;
     } else {
         grow_buffer(9);
         buffer_[size_++] = 0xd3;
-        std::memcpy(buffer_ + size_, &value, 8);
+        uint64_t be_val = hton64(static_cast<uint64_t>(value));
+        std::memcpy(buffer_ + size_, &be_val, 8);
         size_ += 8;
     }
 }
@@ -113,17 +118,20 @@ void Encoder::encodeUint(uint64_t value) {
     } else if (value <= 65535) {
         grow_buffer(3);
         buffer_[size_++] = 0xcd;
-        std::memcpy(buffer_ + size_, &value, 2);
+        uint16_t be_val = hton16(static_cast<uint16_t>(value));
+        std::memcpy(buffer_ + size_, &be_val, 2);
         size_ += 2;
     } else if (value <= 4294967295ULL) {
         grow_buffer(5);
         buffer_[size_++] = 0xce;
-        std::memcpy(buffer_ + size_, &value, 4);
+        uint32_t be_val = hton32(static_cast<uint32_t>(value));
+        std::memcpy(buffer_ + size_, &be_val, 4);
         size_ += 4;
     } else {
         grow_buffer(9);
         buffer_[size_++] = 0xcf;
-        std::memcpy(buffer_ + size_, &value, 8);
+        uint64_t be_val = hton64(value);
+        std::memcpy(buffer_ + size_, &be_val, 8);
         size_ += 8;
     }
 }
@@ -131,7 +139,11 @@ void Encoder::encodeUint(uint64_t value) {
 void Encoder::encodeFloat(double value) {
     grow_buffer(9);
     buffer_[size_++] = 0xcb;
-    std::memcpy(buffer_ + size_, &value, 8);
+    // Convert double to uint64_t preserving bit pattern, then convert to big-endian
+    uint64_t bits;
+    std::memcpy(&bits, &value, 8);
+    uint64_t be_bits = hton64(bits);
+    std::memcpy(buffer_ + size_, &be_bits, 8);
     size_ += 8;
 }
 
