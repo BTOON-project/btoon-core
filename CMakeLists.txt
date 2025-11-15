@@ -155,7 +155,7 @@ target_link_libraries(btoon_core
 )
 
 # Find and link optional compression libraries
-find_package(PkgConfig)
+# PkgConfig is only available on Unix systems
 if(PKG_CONFIG_FOUND)
     # LZ4
     pkg_check_modules(LZ4 liblz4)
@@ -241,7 +241,7 @@ if(BUILD_TESTS)
         FetchContent_Declare(
             googletest
             GIT_REPOSITORY https://github.com/google/googletest.git
-            GIT_TAG v1.14.0
+            GIT_TAG main
         )
         FetchContent_MakeAvailable(googletest)
     endif()
@@ -283,27 +283,17 @@ if(BUILD_TESTS)
     #     )
     # endif()
 endif()
+
 # Benchmarks
-if(BUILD_BENCHMARKS)
-    find_package(benchmark QUIET)
-    if(NOT benchmark_FOUND)
-        include(FetchContent)
-        FetchContent_Declare(
-            googlebenchmark
-            GIT_REPOSITORY https://github.com/google/benchmark.git
-            GIT_TAG v1.8.3
-        )
-        FetchContent_MakeAvailable(googlebenchmark)
-    endif()
-    
-    add_executable(btoon_benchmark tests/benchmark.cpp)
-    target_link_libraries(btoon_benchmark
-        PRIVATE
-            btoon_core
-            benchmark::benchmark
-            benchmark::benchmark_main
-    )
-endif()
+# if(BUILD_BENCHMARKS)
+#     add_executable(btoon_benchmark tests/benchmark.cpp)
+#     target_link_libraries(btoon_benchmark
+#         PRIVATE
+#             btoon_core
+#             benchmark::benchmark
+#             benchmark::benchmark_main
+#     )
+# endif()
 
 # CLI tools
 if(BUILD_TOOLS)
