@@ -5,6 +5,9 @@
 #include <mutex>
 
 #ifdef _WIN32
+    #ifndef NOMINMAX
+        #define NOMINMAX  // Prevent Windows.h from defining min/max macros
+    #endif
     #include <windows.h>
 #else
     #include <sys/mman.h>
@@ -15,6 +18,7 @@
         #include <sys/shm.h>
     #endif
 #endif
+#include <algorithm>  // For std::max
 
 namespace btoon {
 

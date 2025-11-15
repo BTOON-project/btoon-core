@@ -2,7 +2,12 @@
 #include <algorithm>
 #include <stdexcept>
 #include <cstring>
-#include <arpa/inet.h>
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+#else
+    #include <arpa/inet.h>
+#endif
 #include <iostream>
 
 #if defined(__x86_64__) || defined(__i386__)

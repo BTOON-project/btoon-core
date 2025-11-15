@@ -2,7 +2,12 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
-#include <arpa/inet.h>
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+#else
+    #include <arpa/inet.h>
+#endif
 
 namespace btoon {
 

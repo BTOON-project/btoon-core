@@ -2,6 +2,7 @@
 #include "btoon/btoon.h"
 #include <zlib.h>
 #include <stdexcept>
+#include <array>
 
 #ifdef BTOON_WITH_LZ4
 #include <lz4.h>
