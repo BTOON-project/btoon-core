@@ -3,7 +3,6 @@
 #include <cstring>
 #include <stdexcept>
 #include <arpa/inet.h>
-#include <iostream>
 
 namespace btoon {
 
@@ -59,7 +58,6 @@ std::pair<Value, size_t> Decoder::decode_and_get_pos(std::span<const uint8_t> bu
 }
 
 Value Decoder::decode(std::span<const uint8_t> buffer, size_t& pos) const {
-    size_t initial_pos = pos;
     check_overflow(pos, 1, buffer.size());
     uint8_t marker = buffer[pos];
 
@@ -71,7 +69,6 @@ Value Decoder::decode(std::span<const uint8_t> buffer, size_t& pos) const {
 
     switch (marker) {
         case 0xc0: return Value(decodeNil(pos));
-        case 0xc1: throw BtoonException("Invalid marker: 0xc1 (never used)");
         case 0xc2: case 0xc3: return Value(decodeBool(buffer, pos));
         case 0xc4: case 0xc5: case 0xc6: return Value(decodeBinary(buffer, pos));
         case 0xca: case 0xcb: return Value(decodeFloat(buffer, pos));
@@ -82,10 +79,6 @@ Value Decoder::decode(std::span<const uint8_t> buffer, size_t& pos) const {
             return decodeExtension(buffer, pos);
         }
         default: throw BtoonException("Unknown marker");
-    }
-
-    if (pos == initial_pos) {
-        throw BtoonException("Decoder failed to advance position, likely due to an unknown marker");
     }
 }
 
