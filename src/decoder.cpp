@@ -24,7 +24,8 @@ inline uint64_t ntohll(uint64_t value) {
 #endif
 
 static void check_overflow(size_t pos, size_t count, size_t buffer_size) {
-    if (pos + count > buffer_size) {
+    // Check for integer overflow first
+    if (count > buffer_size || pos > buffer_size - count) {
         throw BtoonException("Decoder overflow");
     }
 }
@@ -211,12 +212,18 @@ Value Decoder::decodeExtension(std::span<const uint8_t> buffer, size_t& pos) con
     check_overflow(pos, 1, buffer.size());
     int8_t ext_type = buffer[pos++];
 
+    // Validate that the entire extension payload is within buffer bounds
+    check_overflow(pos, len, buffer.size());
+
     switch (ext_type) {
         case -10: { // Tabular data
             size_t current_ext_data_pos = 0;
 
             // --- Header ---
-            check_overflow(current_ext_data_pos, 4, len);
+            // Note: len is already validated against buffer at pos
+            if (current_ext_data_pos + 4 > len) {
+                throw BtoonException("Decoder overflow in tabular header");
+            }
             uint32_t version = (static_cast<uint32_t>(buffer[pos + current_ext_data_pos]) << 24) |
                                (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 1]) << 16) |
                                (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 2]) << 8) |
@@ -227,14 +234,18 @@ Value Decoder::decodeExtension(std::span<const uint8_t> buffer, size_t& pos) con
                 throw BtoonException("Unsupported tabular version");
             }
 
-            check_overflow(current_ext_data_pos, 4, len);
+            if (current_ext_data_pos + 4 > len) {
+                throw BtoonException("Decoder overflow in tabular num_columns");
+            }
             uint32_t num_columns = (static_cast<uint32_t>(buffer[pos + current_ext_data_pos]) << 24) |
                                    (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 1]) << 16) |
                                    (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 2]) << 8) |
                                    (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 3]));
             current_ext_data_pos += 4;
 
-            check_overflow(current_ext_data_pos, 4, len);
+            if (current_ext_data_pos + 4 > len) {
+                throw BtoonException("Decoder overflow in tabular num_rows");
+            }
             uint32_t num_rows = (static_cast<uint32_t>(buffer[pos + current_ext_data_pos]) << 24) |
                                 (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 1]) << 16) |
                                 (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 2]) << 8) |
@@ -244,24 +255,30 @@ Value Decoder::decodeExtension(std::span<const uint8_t> buffer, size_t& pos) con
             // --- Schema Section ---
             std::vector<std::string> column_names;
             std::vector<uint8_t> column_types;
-            
+
             // Read all column names first
             for (uint32_t i = 0; i < num_columns; ++i) {
-                check_overflow(current_ext_data_pos, 4, len);
+                if (current_ext_data_pos + 4 > len) {
+                    throw BtoonException("Decoder overflow in tabular column name length");
+                }
                 uint32_t name_len = (static_cast<uint32_t>(buffer[pos + current_ext_data_pos]) << 24) |
                                     (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 1]) << 16) |
                                     (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 2]) << 8) |
                                     (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 3]));
                 current_ext_data_pos += 4;
 
-                check_overflow(current_ext_data_pos, name_len, len);
+                if (name_len > len || current_ext_data_pos > len - name_len) {
+                    throw BtoonException("Decoder overflow in tabular column name data");
+                }
                 column_names.emplace_back(reinterpret_cast<const char*>(&buffer[pos + current_ext_data_pos]), name_len);
                 current_ext_data_pos += name_len;
             }
-            
+
             // Then read all column types
             for (uint32_t i = 0; i < num_columns; ++i) {
-                check_overflow(current_ext_data_pos, 1, len);
+                if (current_ext_data_pos + 1 > len) {
+                    throw BtoonException("Decoder overflow in tabular column type");
+                }
                 column_types.push_back(buffer[pos + current_ext_data_pos]);
                 current_ext_data_pos += 1;
             }
@@ -273,15 +290,23 @@ Value Decoder::decodeExtension(std::span<const uint8_t> buffer, size_t& pos) con
             }
 
             for (uint32_t i = 0; i < num_columns; ++i) {
-                check_overflow(current_ext_data_pos, 4, len);
+                if (current_ext_data_pos + 4 > len) {
+                    throw BtoonException("Decoder overflow in tabular column data size");
+                }
                 uint32_t column_data_size = (static_cast<uint32_t>(buffer[pos + current_ext_data_pos]) << 24) |
                                             (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 1]) << 16) |
                                             (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 2]) << 8) |
                                             (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 3]));
                 current_ext_data_pos += 4;
 
+                // Validate column_data_size against remaining extension payload
+                if (column_data_size > len || current_ext_data_pos > len - column_data_size) {
+                    throw BtoonException("Decoder overflow in tabular column data");
+                }
+
                 size_t column_data_start_in_ext = current_ext_data_pos;
                 // Create a sub-span for the current column's data to decode from
+                // We've already validated that pos + column_data_start_in_ext + column_data_size <= buffer.size()
                 std::span<const uint8_t> column_buffer = buffer.subspan(pos + column_data_start_in_ext, column_data_size);
 
                 size_t sub_pos = 0;
