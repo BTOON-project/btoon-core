@@ -278,6 +278,15 @@ if(BUILD_TOOLS)
     target_link_libraries(btoon-convert btoon_core)
     target_compile_features(btoon-convert PRIVATE cxx_std_20)
     install(TARGETS btoon-convert RUNTIME DESTINATION bin)
+    
+    # Interoperability test tools
+    add_executable(generate-test-data tests/interop/generate-test-data.cpp)
+    target_link_libraries(generate-test-data btoon_core)
+    target_compile_features(generate-test-data PRIVATE cxx_std_20)
+    
+    add_executable(validate-test-data tests/interop/validate-test-data.cpp)
+    target_link_libraries(validate-test-data btoon_core)
+    target_compile_features(validate-test-data PRIVATE cxx_std_20)
 endif()
 
 # Language bindings

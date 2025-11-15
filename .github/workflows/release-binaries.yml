@@ -1,0 +1,457 @@
+name: Build and Release Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.0.1)'
+        required: true
+        default: '0.0.1'
+
+env:
+  CMAKE_VERSION: 3.16.3
+  BTOON_VERSION: 0.0.1
+
+jobs:
+  # Build matrix for all platforms
+  build-matrix:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64
+          - name: linux-x64
+            os: ubuntu-20.04
+            arch: x64
+            cmake_args: -DCMAKE_BUILD_TYPE=Release
+            artifact_name: btoon-linux-x64
+            
+          # Linux ARM64
+          - name: linux-arm64
+            os: ubuntu-20.04
+            arch: arm64
+            cmake_args: -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-linux-arm64.cmake
+            artifact_name: btoon-linux-arm64
+            
+          # macOS x86_64
+          - name: macos-x64
+            os: macos-11
+            arch: x64
+            cmake_args: -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64
+            artifact_name: btoon-macos-x64
+            
+          # macOS ARM64 (Apple Silicon)
+          - name: macos-arm64
+            os: macos-11
+            arch: arm64
+            cmake_args: -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
+            artifact_name: btoon-macos-arm64
+            
+          # macOS Universal Binary
+          - name: macos-universal
+            os: macos-11
+            arch: universal
+            cmake_args: -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64"
+            artifact_name: btoon-macos-universal
+            
+          # Windows x64
+          - name: windows-x64
+            os: windows-2019
+            arch: x64
+            cmake_args: -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 16 2019" -A x64
+            artifact_name: btoon-windows-x64
+            
+          # Windows x86
+          - name: windows-x86
+            os: windows-2019
+            arch: x86
+            cmake_args: -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 16 2019" -A Win32
+            artifact_name: btoon-windows-x86
+            
+          # Windows ARM64
+          - name: windows-arm64
+            os: windows-2019
+            arch: arm64
+            cmake_args: -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 16 2019" -A ARM64
+            artifact_name: btoon-windows-arm64
+            
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          
+      - name: Setup build environment
+        run: |
+          if [ "${{ runner.os }}" == "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y build-essential cmake ninja-build
+            
+            # Install cross-compilation tools for ARM64
+            if [ "${{ matrix.arch }}" == "arm64" ]; then
+              sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            fi
+          elif [ "${{ runner.os }}" == "macOS" ]; then
+            brew install cmake ninja
+          fi
+        shell: bash
+        
+      - name: Configure CMake
+        run: cmake -B build ${{ matrix.cmake_args }} -DBUILD_TESTS=ON -DBUILD_TOOLS=ON
+        
+      - name: Build
+        run: cmake --build build --config Release --parallel
+        
+      - name: Run tests (native only)
+        if: matrix.arch == 'x64' || matrix.arch == 'x86' || (matrix.arch == 'arm64' && runner.os == 'macOS')
+        run: |
+          cd build
+          ctest -C Release --verbose
+        shell: bash
+        
+      - name: Package binaries
+        run: |
+          mkdir -p dist/bin
+          mkdir -p dist/lib
+          mkdir -p dist/include
+          
+          # Copy binaries
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            cp build/Release/*.exe dist/bin/ || true
+            cp build/Release/*.dll dist/bin/ || true
+            cp build/Release/*.lib dist/lib/ || true
+          else
+            cp build/btoon dist/bin/ || true
+            cp build/btoon-schema dist/bin/ || true
+            cp build/btoon-convert dist/bin/ || true
+            cp build/*.a dist/lib/ || true
+            cp build/*.so dist/lib/ || true
+            cp build/*.dylib dist/lib/ || true
+          fi
+          
+          # Copy headers
+          cp -r include/btoon dist/include/
+          
+          # Create README
+          cat > dist/README.md << EOF
+          # BTOON Binary Distribution
+          
+          Version: ${{ env.BTOON_VERSION }}
+          Platform: ${{ matrix.name }}
+          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          ## Contents
+          
+          - \`bin/\` - Executable tools
+            - \`btoon\` - BTOON CLI tool
+            - \`btoon-schema\` - Schema compiler
+            - \`btoon-convert\` - Format converter
+          - \`lib/\` - Static and dynamic libraries
+          - \`include/\` - C++ header files
+          
+          ## Installation
+          
+          1. Add \`bin/\` to your PATH
+          2. Add \`lib/\` to your library path (LD_LIBRARY_PATH on Linux, DYLD_LIBRARY_PATH on macOS)
+          3. Include \`include/\` in your C++ projects
+          
+          ## Usage
+          
+          \`\`\`bash
+          # Encode JSON to BTOON
+          btoon encode input.json output.btoon
+          
+          # Decode BTOON to JSON
+          btoon decode input.btoon output.json
+          
+          # Compile schema
+          btoon-schema compile schema.yaml
+          
+          # Convert formats
+          btoon-convert --from json --to yaml input.json output.yaml
+          \`\`\`
+          
+          ## License
+          
+          See LICENSE file in the repository.
+          EOF
+          
+          # Create archive
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            7z a -tzip ${{ matrix.artifact_name }}.zip dist/*
+          else
+            tar -czf ${{ matrix.artifact_name }}.tar.gz -C dist .
+          fi
+        shell: bash
+        
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            *.tar.gz
+            *.zip
+            
+  # Build Python wheels
+  build-python-wheels:
+    name: Build Python ${{ matrix.python }} wheel for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-20.04, windows-2019, macos-11]
+        python: ['3.8', '3.9', '3.10', '3.11', '3.12']
+        
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python }}
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install wheel setuptools pybind11 cibuildwheel
+          
+      - name: Build wheel
+        run: |
+          cd bindings/python
+          python setup.py bdist_wheel
+          
+      - name: Test wheel
+        run: |
+          pip install dist/*.whl
+          python -c "import btoon; print(btoon.__version__)"
+          
+      - name: Upload wheel
+        uses: actions/upload-artifact@v3
+        with:
+          name: python-wheels
+          path: bindings/python/dist/*.whl
+          
+  # Build Node.js packages
+  build-nodejs:
+    name: Build Node.js package
+    runs-on: ubuntu-20.04
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v12
+        with:
+          version: '3.1.51'
+          
+      - name: Build WASM
+        run: |
+          cd bindings/javascript
+          mkdir -p build
+          emcmake cmake -B build -DCMAKE_BUILD_TYPE=Release ../..
+          cmake --build build --target btoon_wasm
+          
+      - name: Build NPM package
+        run: |
+          cd bindings/javascript
+          npm install
+          npm run build
+          npm pack
+          
+      - name: Upload NPM package
+        uses: actions/upload-artifact@v3
+        with:
+          name: npm-package
+          path: bindings/javascript/*.tgz
+          
+  # Build Docker images
+  build-docker:
+    name: Build Docker images
+    runs-on: ubuntu-20.04
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        
+      - name: Login to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: |
+            btoon/btoon:latest
+            btoon/btoon:${{ env.BTOON_VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          
+  # Create release
+  create-release:
+    name: Create Release
+    needs: [build-matrix, build-python-wheels, build-nodejs, build-docker]
+    runs-on: ubuntu-20.04
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts/
+          
+      - name: Create checksums
+        run: |
+          cd artifacts
+          for file in */*.{tar.gz,zip,whl,tgz}; do
+            if [ -f "$file" ]; then
+              sha256sum "$file" | tee -a ../checksums.txt
+            fi
+          done
+        shell: bash
+        
+      - name: Generate release notes
+        run: |
+          cat > RELEASE_NOTES.md << EOF
+          # BTOON v${{ env.BTOON_VERSION }} Release
+          
+          ## Downloads
+          
+          ### Pre-built Binaries
+          
+          #### Linux
+          - [btoon-linux-x64.tar.gz] - Linux x86_64
+          - [btoon-linux-arm64.tar.gz] - Linux ARM64
+          
+          #### macOS
+          - [btoon-macos-x64.tar.gz] - macOS Intel
+          - [btoon-macos-arm64.tar.gz] - macOS Apple Silicon
+          - [btoon-macos-universal.tar.gz] - macOS Universal Binary
+          
+          #### Windows
+          - [btoon-windows-x64.zip] - Windows x64
+          - [btoon-windows-x86.zip] - Windows x86 (32-bit)
+          - [btoon-windows-arm64.zip] - Windows ARM64
+          
+          ### Language Bindings
+          
+          #### Python
+          Install via pip:
+          \`\`\`bash
+          pip install btoon==${{ env.BTOON_VERSION }}
+          \`\`\`
+          
+          #### Node.js
+          Install via npm:
+          \`\`\`bash
+          npm install btoon@${{ env.BTOON_VERSION }}
+          \`\`\`
+          
+          #### Docker
+          \`\`\`bash
+          docker pull btoon/btoon:${{ env.BTOON_VERSION }}
+          \`\`\`
+          
+          ## What's New
+          
+          - Initial release of BTOON v${{ env.BTOON_VERSION }}
+          - Full implementation of BTOON specification
+          - Support for multiple compression algorithms
+          - Schema versioning and evolution
+          - Cross-language interoperability
+          - Zero-copy APIs for performance
+          - Comprehensive validation and security features
+          
+          ## Installation
+          
+          ### From Binary
+          1. Download the appropriate archive for your platform
+          2. Extract to your preferred location
+          3. Add the \`bin\` directory to your PATH
+          
+          ### From Source
+          \`\`\`bash
+          git clone https://github.com/BTOON-project/btoon-core.git
+          cd btoon-core
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j\$(nproc)
+          sudo make install
+          \`\`\`
+          
+          ## Checksums
+          
+          See \`checksums.txt\` for SHA-256 checksums of all release files.
+          
+          ## Documentation
+          
+          - [BTOON Specification](docs/btoon-spec.md)
+          - [Implementation Guide](docs/IMPLEMENTATION-GUIDE.md)
+          - [API Documentation](https://btoon.readthedocs.io)
+          
+          ## Support
+          
+          - [GitHub Issues](https://github.com/BTOON-project/btoon-core/issues)
+          - [Discord Community](https://discord.gg/btoon)
+          EOF
+          
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ env.BTOON_VERSION }}
+          name: BTOON v${{ env.BTOON_VERSION }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/*/*.tar.gz
+            artifacts/*/*.zip
+            artifacts/*/*.whl
+            artifacts/*/*.tgz
+            checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Publish to PyPI
+        run: |
+          pip install twine
+          twine upload artifacts/python-wheels/*.whl
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+          
+      - name: Publish to NPM
+        run: |
+          npm config set //registry.npmjs.org/:_authToken ${{ secrets.NPM_TOKEN }}
+          for package in artifacts/npm-package/*.tgz; do
+            npm publish "$package"
+          done
