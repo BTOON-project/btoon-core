@@ -173,9 +173,7 @@ if(BUILD_EXAMPLES)
     add_executable(example_tabular examples/tabular.cpp)
     target_link_libraries(example_tabular btoon_core)
     
-    install(TARGETS example_basic example_tabular
-        RUNTIME DESTINATION bin
-    )
+    # Examples are not installed - they are for testing/demonstration only
 endif()
 
 # Tests

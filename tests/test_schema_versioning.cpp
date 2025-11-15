@@ -68,9 +68,9 @@ protected:
 
 TEST_F(SchemaVersioningTest, VersionParsing) {
     SchemaVersion v1 = SchemaVersion::fromString("1.2.3");
-    EXPECT_EQ(v1.major, 1);
-    EXPECT_EQ(v1.minor, 2);
-    EXPECT_EQ(v1.patch, 3);
+    EXPECT_EQ(v1.major, 1u);
+    EXPECT_EQ(v1.minor, 2u);
+    EXPECT_EQ(v1.patch, 3u);
     EXPECT_EQ(v1.toString(), "1.2.3");
     
     SchemaVersion v2(2, 0, 1);
@@ -167,7 +167,7 @@ TEST_F(SchemaVersioningTest, FieldManagement) {
     
     // Get all fields
     auto fields = schema->getFields();
-    EXPECT_EQ(fields.size(), 1);
+    EXPECT_EQ(fields.size(), 1u);
     EXPECT_EQ(fields[0].name, "id");
 }
 
