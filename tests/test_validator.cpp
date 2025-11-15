@@ -55,11 +55,11 @@ TEST_F(ValidatorTest, ValidateValidData) {
     EXPECT_TRUE(validator.quickCheck(valid_array));
     EXPECT_TRUE(validator.quickCheck(valid_map));
     
-    auto result = validator.validate(valid_int);
+    auto result = validator.validate(std::span<const uint8_t>(valid_int));
     EXPECT_TRUE(result.valid);
     EXPECT_TRUE(result.errors.empty());
     
-    result = validator.validate(valid_string);
+    result = validator.validate(std::span<const uint8_t>(valid_string));
     EXPECT_TRUE(result.valid);
     EXPECT_TRUE(result.errors.empty());
 }
@@ -67,7 +67,7 @@ TEST_F(ValidatorTest, ValidateValidData) {
 TEST_F(ValidatorTest, ValidateTruncatedData) {
     Validator validator;
     
-    auto result = validator.validate(truncated_data);
+    auto result = validator.validate(std::span<const uint8_t>(truncated_data));
     EXPECT_FALSE(result.valid);
     EXPECT_FALSE(result.errors.empty());
 }
@@ -77,7 +77,7 @@ TEST_F(ValidatorTest, ValidateInvalidUTF8) {
     opts.require_utf8_strings = true;
     
     Validator validator(opts);
-    auto result = validator.validate(invalid_utf8);
+    auto result = validator.validate(std::span<const uint8_t>(invalid_utf8));
     EXPECT_FALSE(result.valid);
     // Should detect invalid UTF-8
 }
@@ -87,7 +87,7 @@ TEST_F(ValidatorTest, ValidateExcessiveDepth) {
     opts.max_depth = 100;
     
     Validator validator(opts);
-    auto result = validator.validate(excessive_depth);
+    auto result = validator.validate(std::span<const uint8_t>(excessive_depth));
     EXPECT_FALSE(result.valid);
     EXPECT_FALSE(result.errors.empty());
     // Should detect excessive nesting
@@ -96,7 +96,7 @@ TEST_F(ValidatorTest, ValidateExcessiveDepth) {
 TEST_F(ValidatorTest, ValidateHugeStringClaim) {
     Validator validator;
     
-    auto result = validator.validate(huge_string_claim);
+    auto result = validator.validate(std::span<const uint8_t>(huge_string_claim));
     EXPECT_FALSE(result.valid);
     // Should detect unreasonable size claim
 }
@@ -110,12 +110,12 @@ TEST_F(ValidatorTest, ValidateWithSizeLimits) {
     
     // String exceeding limit
     auto long_string = encode(String("This is a very long string that exceeds the limit"));
-    auto result = validator.validate(long_string);
+    auto result = validator.validate(std::span<const uint8_t>(long_string));
     EXPECT_FALSE(result.valid);
     
     // Array exceeding limit
     auto large_array = encode(Array{Int(1), Int(2), Int(3), Int(4), Int(5)});
-    result = validator.validate(large_array);
+    result = validator.validate(std::span<const uint8_t>(large_array));
     EXPECT_FALSE(result.valid);
 }
 
@@ -177,10 +177,10 @@ TEST_F(ValidatorTest, TypeValidation) {
     EXPECT_TRUE(TypeValidator::validateFloat(std::numeric_limits<double>::infinity(), false, true));
     
     // Timestamp validation
-    Timestamp valid_ts{1234567890, 123456789};
+    Timestamp valid_ts{1234567890};
     EXPECT_TRUE(TypeValidator::validateTimestamp(valid_ts));
     
-    Timestamp invalid_ts{-1, 1000000000};  // Nanoseconds out of range
+    Timestamp invalid_ts{-1};  // Before Unix epoch
     EXPECT_FALSE(TypeValidator::validateTimestamp(invalid_ts));
     
     // Extension validation
@@ -228,7 +228,7 @@ TEST_F(ValidatorTest, ValidateWithStatistics) {
     };
     
     auto encoded = encode(complex);
-    auto result = validator.validate(encoded);
+    auto result = validator.validate(std::span<const uint8_t>(encoded));
     
     EXPECT_TRUE(result.valid);
     EXPECT_TRUE(result.stats.has_value());
@@ -278,6 +278,6 @@ TEST_F(ValidatorTest, DuplicateMapKeys) {
     opts.allow_duplicate_map_keys = false;
     
     Validator validator(opts);
-    auto result = validator.validate(valid_map);
+    auto result = validator.validate(std::span<const uint8_t>(valid_map));
     EXPECT_TRUE(result.valid);
 }

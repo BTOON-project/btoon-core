@@ -141,3 +141,6 @@ docs/_build/
 docs/.doctrees/
 docs/api/
 
+
+# Snyk Security Extension - AI Rules (auto-generated)
+.cursor/rules/snyk_rules.mdc

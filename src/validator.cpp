@@ -87,7 +87,7 @@ bool UTF8Validator::isValid(std::string_view str) {
         
         if (!isValidCodePoint(cp)) return false;
         
-        i += len;
+        i += static_cast<size_t>(len);
     }
     
     return true;
@@ -117,12 +117,12 @@ std::string UTF8Validator::sanitize(std::string_view str) {
         }
         
         if (valid) {
-            result.append(str.data() + i, len);
+            result.append(str.data() + i, static_cast<size_t>(len));
         } else {
             result += "\xEF\xBF\xBD";  // U+FFFD
         }
         
-        i += len;
+        i += static_cast<size_t>(len);
     }
     
     return result;
@@ -149,8 +149,7 @@ bool TypeValidator::validateTimestamp(const Timestamp& ts) {
     const int64_t MIN_TIMESTAMP = 0;
     const int64_t MAX_TIMESTAMP = 4102444800;  // Jan 1, 2100
     
-    return ts.seconds >= MIN_TIMESTAMP && ts.seconds <= MAX_TIMESTAMP &&
-           ts.nanoseconds >= 0 && ts.nanoseconds < 1000000000;
+    return ts.seconds >= MIN_TIMESTAMP && ts.seconds <= MAX_TIMESTAMP;
 }
 
 bool TypeValidator::validateExtension(const Extension& ext) {
@@ -328,7 +327,7 @@ public:
         }
         
         // Check for compression header
-        bool isCompressed = false;
+        [[maybe_unused]] bool isCompressed = false;
         if (data.size() >= 16) {
             uint32_t magic = ntohl(*reinterpret_cast<const uint32_t*>(data.data()));
             if (magic == 0x42544F4E) {  // "BTON"
@@ -378,8 +377,22 @@ public:
                                  valueResult.warnings.end());
             result.valid = result.valid && valueResult.valid;
             
-            if (options.collect_stats && valueResult.stats) {
-                result.stats = valueResult.stats;
+            if (options.collect_stats) {
+                if (!result.stats) {
+                    result.stats = ValidationResult::Stats{};
+                }
+                if (valueResult.stats) {
+                    // Merge stats from value validation
+                    result.stats->string_count += valueResult.stats->string_count;
+                    result.stats->binary_count += valueResult.stats->binary_count;
+                    result.stats->array_count += valueResult.stats->array_count;
+                    result.stats->map_count += valueResult.stats->map_count;
+                    result.stats->max_depth_reached = std::max(result.stats->max_depth_reached, valueResult.stats->max_depth_reached);
+                    result.stats->largest_string = std::max(result.stats->largest_string, valueResult.stats->largest_string);
+                    result.stats->largest_binary = std::max(result.stats->largest_binary, valueResult.stats->largest_binary);
+                    result.stats->largest_array = std::max(result.stats->largest_array, valueResult.stats->largest_array);
+                    result.stats->largest_map = std::max(result.stats->largest_map, valueResult.stats->largest_map);
+                }
             }
             
         } catch (const std::exception& e) {
@@ -391,6 +404,10 @@ public:
     
     ValidationResult validateValue(const Value& value, size_t depth) const {
         ValidationResult result;
+        
+        if (options.collect_stats) {
+            result.stats = ValidationResult::Stats{};
+        }
         
         // Check depth
         if (depth > options.max_depth) {
@@ -437,6 +454,19 @@ public:
                                        elemResult.errors.begin(), 
                                        elemResult.errors.end());
                     result.valid = result.valid && elemResult.valid;
+                    
+                    // Merge stats from element validation
+                    if (options.collect_stats && result.stats && elemResult.stats) {
+                        result.stats->string_count += elemResult.stats->string_count;
+                        result.stats->binary_count += elemResult.stats->binary_count;
+                        result.stats->array_count += elemResult.stats->array_count;
+                        result.stats->map_count += elemResult.stats->map_count;
+                        result.stats->max_depth_reached = std::max(result.stats->max_depth_reached, elemResult.stats->max_depth_reached);
+                        result.stats->largest_string = std::max(result.stats->largest_string, elemResult.stats->largest_string);
+                        result.stats->largest_binary = std::max(result.stats->largest_binary, elemResult.stats->largest_binary);
+                        result.stats->largest_array = std::max(result.stats->largest_array, elemResult.stats->largest_array);
+                        result.stats->largest_map = std::max(result.stats->largest_map, elemResult.stats->largest_map);
+                    }
                 }
             } else if constexpr (std::is_same_v<T, Map>) {
                 if (arg.size() > options.max_map_size) {
@@ -465,6 +495,19 @@ public:
                                        valResult.errors.begin(), 
                                        valResult.errors.end());
                     result.valid = result.valid && valResult.valid;
+                    
+                    // Merge stats from value validation
+                    if (options.collect_stats && result.stats && valResult.stats) {
+                        result.stats->string_count += valResult.stats->string_count;
+                        result.stats->binary_count += valResult.stats->binary_count;
+                        result.stats->array_count += valResult.stats->array_count;
+                        result.stats->map_count += valResult.stats->map_count;
+                        result.stats->max_depth_reached = std::max(result.stats->max_depth_reached, valResult.stats->max_depth_reached);
+                        result.stats->largest_string = std::max(result.stats->largest_string, valResult.stats->largest_string);
+                        result.stats->largest_binary = std::max(result.stats->largest_binary, valResult.stats->largest_binary);
+                        result.stats->largest_array = std::max(result.stats->largest_array, valResult.stats->largest_array);
+                        result.stats->largest_map = std::max(result.stats->largest_map, valResult.stats->largest_map);
+                    }
                 }
             } else if constexpr (std::is_same_v<T, Float>) {
                 if (!TypeValidator::validateFloat(arg, options.allow_nan_float, options.allow_inf_float)) {

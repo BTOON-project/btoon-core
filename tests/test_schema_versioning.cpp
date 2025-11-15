@@ -292,7 +292,7 @@ TEST_F(SchemaVersioningTest, SchemaRegistry) {
     
     // Get all versions
     auto versions = registry.getVersions("user");
-    EXPECT_EQ(versions.size(), 3);
+    EXPECT_EQ(versions.size(), 3u);
     
     // Validate data (auto-detection)
     EXPECT_TRUE(registry.validate(user_v1));
