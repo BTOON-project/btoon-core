@@ -289,7 +289,7 @@ std::vector<InteropTestCase> generate_test_cases() {
     }
     
     EncodeOptions tabular_opts;
-    tabular_opts.use_tabular = true;
+    tabular_opts.auto_tabular = true;
     
     cases.push_back({
         "tabular_data", "Tabular optimized data",
@@ -362,7 +362,7 @@ int main(int argc, char* argv[]) {
     fs::path output_dir = argv[1];
     
     std::cout << "BTOON Interoperability Test Data Generator" << std::endl;
-    std::cout << "Version: " << BTOON_VERSION << std::endl;
+    std::cout << "Version: " << btoon::version() << std::endl;
     std::cout << "Output: " << output_dir << std::endl;
     std::cout << std::endl;
     
@@ -382,7 +382,7 @@ int main(int argc, char* argv[]) {
     fs::path manifest_path = output_dir / "manifest.json";
     std::ofstream manifest(manifest_path);
     manifest << "{\n";
-    manifest << "  \"version\": \"" << BTOON_VERSION << "\",\n";
+    manifest << "  \"version\": \"" << btoon::version() << "\",\n";
     manifest << "  \"generator\": \"cpp\",\n";
     manifest << "  \"timestamp\": " << std::time(nullptr) << ",\n";
     manifest << "  \"test_cases\": [\n";

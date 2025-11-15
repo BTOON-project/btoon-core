@@ -14,7 +14,7 @@
 namespace fs = std::filesystem;
 using namespace btoon;
 
-struct ValidationResult {
+struct InteropValidationResult {
     std::string test_name;
     bool passed;
     std::string error_message;
@@ -80,7 +80,7 @@ bool validate_test_case(const fs::path& btoon_file, const fs::path& meta_file) {
     val_opts.require_utf8_strings = true;
     
     Validator validator(val_opts);
-    auto validation_result = validator.validate(data);
+    auto validation_result = validator.validate(std::span<const uint8_t>(data.data(), data.size()));
     
     if (!validation_result.valid) {
         std::string errors;
@@ -139,7 +139,7 @@ int main(int argc, char* argv[]) {
     fs::path test_dir = argv[1];
     
     std::cout << "BTOON Interoperability Test Data Validator" << std::endl;
-    std::cout << "Version: " << BTOON_VERSION << std::endl;
+    std::cout << "Version: " << btoon::version() << std::endl;
     std::cout << "Test Directory: " << test_dir << std::endl;
     std::cout << std::endl;
     
@@ -160,7 +160,7 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    std::vector<ValidationResult> results;
+    std::vector<InteropValidationResult> results;
     int passed = 0;
     int failed = 0;
     
@@ -171,7 +171,7 @@ int main(int argc, char* argv[]) {
             fs::path meta_path = entry.path();
             meta_path.replace_extension(".meta.json");
             
-            ValidationResult result;
+            InteropValidationResult result;
             result.test_name = test_name;
             
             try {
