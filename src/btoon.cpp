@@ -1,17 +1,22 @@
+#ifdef _WIN32
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+#else
+    #include <arpa/inet.h>
+#endif
+
 #include "btoon/btoon.h"
 #include "btoon/encoder.h"
 #include "btoon/decoder.h"
 #include "btoon/compression.h"
 #include <set>
 #include <vector>
+#include <algorithm>
 #include <stdexcept>
 #include <cstring>
-#ifdef _WIN32
-    #include <winsock2.h>
-    #include <ws2tcpip.h>
-#else
-    #include <arpa/inet.h>
-#endif
 #include <chrono>
 
 namespace btoon {
