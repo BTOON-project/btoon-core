@@ -75,8 +75,12 @@ find_package(ZLIB REQUIRED)
 find_package(OpenSSL REQUIRED)
 
 # PkgConfig is only needed on Unix systems for optional compression libraries
-if(UNIX)
+# On Windows, we skip PkgConfig and rely on vcpkg or manual library finding
+if(WIN32)
+    set(PKG_CONFIG_FOUND FALSE)
+else()
     find_package(PkgConfig REQUIRED)
+    set(PKG_CONFIG_FOUND TRUE)
 endif()
 
 # Optional dependencies
