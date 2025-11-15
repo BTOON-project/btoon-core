@@ -4,10 +4,30 @@
 using namespace btoon;
 
 TEST(SchemaTest, BasicValidation) {
-    Value schema_def = Map{
+    // Old style schema definition for backward compatibility
+    Value old_schema_def = Map{
         {"name", String("string")},
         {"age", String("int")}
     };
+    
+    // Convert to new schema format
+    Value schema_def = Map{
+        {"name", String("user")},
+        {"version", String("1.0.0")},
+        {"fields", Array{
+            Map{
+                {"name", String("name")},
+                {"type", String("string")},
+                {"required", Bool(true)}
+            },
+            Map{
+                {"name", String("age")},
+                {"type", String("int")},
+                {"required", Bool(true)}
+            }
+        }}
+    };
+    
     Schema schema(schema_def);
 
     Value valid_user = Map{
