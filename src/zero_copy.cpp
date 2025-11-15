@@ -389,7 +389,8 @@ BufferPool::Stats BufferPool::stats() const {
 size_t ZeroCopyEncoder::encode_into(const Value& value, uint8_t* buffer, size_t buffer_size) {
     // Use existing encoder but write directly to provided buffer
     Encoder encoder;
-    auto encoded = encoder.encode(value);
+    encoder.encode(value);
+    auto encoded = encoder.getBuffer();
     
     if (encoded.size() > buffer_size) {
         throw BtoonException("Buffer too small for encoding");
@@ -401,7 +402,8 @@ size_t ZeroCopyEncoder::encode_into(const Value& value, uint8_t* buffer, size_t 
 
 BufferPool::Buffer ZeroCopyEncoder::encode_pooled(const Value& value, BufferPool& pool) {
     Encoder encoder;
-    auto encoded = encoder.encode(value);
+    encoder.encode(value);
+    auto encoded = encoder.getBuffer();
     
     auto buffer = pool.get_buffer(encoded.size());
     buffer.resize(encoded.size());

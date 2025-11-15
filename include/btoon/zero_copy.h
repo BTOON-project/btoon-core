@@ -14,8 +14,43 @@
 #include <string_view>
 #include <memory>
 #include <functional>
+#include <unordered_map>
+#include <mutex>
+#include "btoon/capi.h"
+
+#ifndef BTOON_API
+#ifdef _WIN32
+#  ifdef BTOON_BUILD_SHARED
+#    define BTOON_API __declspec(dllexport)
+#  else
+#    define BTOON_API
+#  endif
+#else
+#  define BTOON_API __attribute__((visibility("default")))
+#endif
+#endif
 
 namespace btoon {
+
+struct ValueView;
+using ArrayView = std::vector<ValueView>;
+using MapView = std::unordered_map<std::string_view, ValueView>;
+
+struct ValueView : std::variant<
+    Nil,
+    Bool,
+    Int,
+    Uint,
+    Float,
+    std::string_view,
+    std::span<const uint8_t>,
+    ArrayView,
+    MapView,
+    Timestamp,
+    Extension
+> {
+    using variant::variant;
+};
 
 /**
  * @brief Memory view for zero-copy access to BTOON data
@@ -121,12 +156,17 @@ private:
 class ZeroCopyDecoder {
 public:
     struct Options {
-        bool validate_utf8 = true;
-        bool check_bounds = true;
-        size_t max_depth = 128;
+        bool validate_utf8;
+        bool check_bounds;
+        size_t max_depth;
+
+        Options()
+            : validate_utf8(true),
+              check_bounds(true),
+              max_depth(128) {}
     };
     
-    explicit ZeroCopyDecoder(const Options& opts = Options{})
+    explicit ZeroCopyDecoder(const Options& opts = Options())
         : options_(opts) {}
     
     /**
@@ -146,23 +186,6 @@ private:
     ValueView decodeValue(const uint8_t* data, size_t size, size_t& pos, size_t depth);
     Options options_;
 };
-
-/**
- * @brief Value type that uses views instead of copies
- */
-using ValueView = std::variant<
-    Nil,
-    Bool,
-    Int,
-    Uint,
-    Float,
-    std::string_view,      // Zero-copy string view
-    std::span<const uint8_t>, // Zero-copy binary view
-    std::vector<ValueView>,    // Array (contains views)
-    std::unordered_map<std::string_view, ValueView>, // Map with view keys
-    Timestamp,
-    Extension
->;
 
 /**
  * @brief Memory-mapped file for zero-copy file access
