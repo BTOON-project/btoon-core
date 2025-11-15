@@ -145,7 +145,7 @@ public:
      * @brief Encodes a timestamp value.
      * @param timestamp A 64-bit integer representing a timestamp.
      */
-    void encodeTimestamp(int64_t timestamp);
+    void encodeTimestamp(const Timestamp& timestamp);
 
     // Custom extension types
     void encodeDate(int64_t milliseconds);

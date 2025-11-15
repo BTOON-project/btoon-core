@@ -7,6 +7,23 @@
 
 namespace btoon {
 
+// Define ntohll if not available on this platform
+#ifndef ntohll
+inline uint64_t ntohll(uint64_t value) {
+    // Check endianness
+    static const int num = 42;
+    if (*reinterpret_cast<const char*>(&num) == num) {
+        // Little endian - swap bytes
+        const uint32_t high_part = ntohl(static_cast<uint32_t>(value >> 32));
+        const uint32_t low_part = ntohl(static_cast<uint32_t>(value & 0xFFFFFFFFLL));
+        return (static_cast<uint64_t>(low_part) << 32) | high_part;
+    } else {
+        // Big endian - no swap needed
+        return value;
+    }
+}
+#endif
+
 static void check_overflow(size_t pos, size_t count, size_t buffer_size) {
     if (pos + count > buffer_size) {
         throw BtoonException("Decoder overflow");
@@ -286,19 +303,54 @@ Value Decoder::decodeExtension(std::span<const uint8_t> buffer, size_t& pos) con
             return arr;
         }
         case -1: { // Timestamp
-            if (len != 4 && len != 8) throw BtoonException("Invalid timestamp length");
-            int64_t seconds = 0;
-            if (len == 4) {
-                uint32_t val;
-                std::memcpy(&val, &buffer[pos], 4);
-                seconds = ntohl(val);
-            } else if (len == 8) {
-                uint64_t val;
-                std::memcpy(&val, &buffer[pos], 8);
-                seconds = ntohll(val);
+            // New format: 8 bytes seconds + 4 bytes nanoseconds + optional 2 bytes timezone
+            // Old format (backward compat): 4 or 8 bytes seconds only
+            
+            if (len == 4 || len == 8) {
+                // Old format - seconds only
+                int64_t seconds = 0;
+                if (len == 4) {
+                    uint32_t val;
+                    std::memcpy(&val, &buffer[pos], 4);
+                    seconds = ntohl(val);
+                } else {
+                    uint64_t val;
+                    std::memcpy(&val, &buffer[pos], 8);
+                    seconds = ntohll(val);
+                }
+                pos += len;
+                return Timestamp(seconds);
+            } else if (len == 12) {
+                // New format without timezone
+                uint64_t sec_be;
+                std::memcpy(&sec_be, &buffer[pos], 8);
+                int64_t seconds = static_cast<int64_t>(ntohll(sec_be));
+                
+                uint32_t nano_be;
+                std::memcpy(&nano_be, &buffer[pos + 8], 4);
+                uint32_t nanoseconds = ntohl(nano_be);
+                
+                pos += len;
+                return Timestamp(seconds, nanoseconds);
+            } else if (len == 14) {
+                // New format with timezone
+                uint64_t sec_be;
+                std::memcpy(&sec_be, &buffer[pos], 8);
+                int64_t seconds = static_cast<int64_t>(ntohll(sec_be));
+                
+                uint32_t nano_be;
+                std::memcpy(&nano_be, &buffer[pos + 8], 4);
+                uint32_t nanoseconds = ntohl(nano_be);
+                
+                uint16_t tz_be;
+                std::memcpy(&tz_be, &buffer[pos + 12], 2);
+                int16_t timezone_offset = static_cast<int16_t>(ntohs(tz_be));
+                
+                pos += len;
+                return Timestamp(seconds, nanoseconds, timezone_offset);
+            } else {
+                throw BtoonException("Invalid timestamp length");
             }
-            pos += len;
-            return Timestamp{seconds};
         }
         case -2: return decodeDate(buffer, pos, len - 1);
         case -3: return decodeDateTime(buffer, pos, len - 1);

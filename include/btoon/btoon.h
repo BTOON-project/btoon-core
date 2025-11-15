@@ -84,15 +84,54 @@ struct Extension {
     }
 };
 
+/**
+ * @brief Extended precision timestamp with nanoseconds and timezone support
+ */
 struct Timestamp {
-    int64_t seconds;
+    int64_t seconds;        // Unix epoch seconds
+    uint32_t nanoseconds;   // Nanoseconds (0-999999999)  
+    int16_t timezone_offset; // Timezone offset in minutes from UTC (-720 to +840)
+    bool has_timezone;      // Whether timezone information is present
+    
+    // Constructors for backward compatibility
+    Timestamp() : seconds(0), nanoseconds(0), timezone_offset(0), has_timezone(false) {}
+    
+    explicit Timestamp(int64_t sec) 
+        : seconds(sec), nanoseconds(0), timezone_offset(0), has_timezone(false) {}
+    
+    Timestamp(int64_t sec, uint32_t nano)
+        : seconds(sec), nanoseconds(nano), timezone_offset(0), has_timezone(false) {}
+    
+    Timestamp(int64_t sec, uint32_t nano, int16_t tz_offset)
+        : seconds(sec), nanoseconds(nano), timezone_offset(tz_offset), has_timezone(true) {}
+    
+    // Helper methods
+    static Timestamp now();
+    static Timestamp from_microseconds(int64_t micros);
+    static Timestamp from_milliseconds(int64_t millis);
+    
+    int64_t to_microseconds() const {
+        return seconds * 1000000LL + nanoseconds / 1000;
+    }
+    
+    int64_t to_milliseconds() const {
+        return seconds * 1000LL + nanoseconds / 1000000;
+    }
+    
+    double to_seconds_double() const {
+        return static_cast<double>(seconds) + static_cast<double>(nanoseconds) / 1e9;
+    }
 
     bool operator==(const Timestamp& other) const {
-        return seconds == other.seconds;
+        return seconds == other.seconds && 
+               nanoseconds == other.nanoseconds &&
+               timezone_offset == other.timezone_offset &&
+               has_timezone == other.has_timezone;
     }
 
     bool operator<(const Timestamp& other) const {
-        return seconds < other.seconds;
+        if (seconds != other.seconds) return seconds < other.seconds;
+        return nanoseconds < other.nanoseconds;
     }
 };
 

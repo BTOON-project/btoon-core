@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <arpa/inet.h>
+#include <chrono>
 
 namespace btoon {
 
@@ -210,6 +211,31 @@ bool is_tabular(const Array& arr) {
 
 const char* version() {
     return "0.0.1";
+}
+
+// Timestamp implementations
+Timestamp Timestamp::now() {
+    using namespace std::chrono;
+    
+    auto now = system_clock::now();
+    auto duration = now.time_since_epoch();
+    
+    auto seconds = duration_cast<std::chrono::seconds>(duration);
+    auto nanoseconds = duration_cast<std::chrono::nanoseconds>(duration - seconds);
+    
+    return Timestamp(seconds.count(), static_cast<uint32_t>(nanoseconds.count()));
+}
+
+Timestamp Timestamp::from_microseconds(int64_t micros) {
+    int64_t sec = micros / 1000000;
+    uint32_t nano = static_cast<uint32_t>((micros % 1000000) * 1000);
+    return Timestamp(sec, nano);
+}
+
+Timestamp Timestamp::from_milliseconds(int64_t millis) {
+    int64_t sec = millis / 1000;
+    uint32_t nano = static_cast<uint32_t>((millis % 1000) * 1000000);
+    return Timestamp(sec, nano);
 }
 
 } // namespace btoon

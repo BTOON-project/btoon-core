@@ -147,6 +147,47 @@ target_link_libraries(btoon_core
         OpenSSL::SSL
 )
 
+# Find and link optional compression libraries
+find_package(PkgConfig)
+if(PKG_CONFIG_FOUND)
+    # LZ4
+    pkg_check_modules(LZ4 liblz4)
+    if(LZ4_FOUND)
+        target_include_directories(btoon_core PUBLIC ${LZ4_INCLUDE_DIRS})
+        target_link_libraries(btoon_core PUBLIC ${LZ4_LIBRARIES})
+        target_compile_definitions(btoon_core PUBLIC BTOON_WITH_LZ4)
+        message(STATUS "LZ4 compression enabled")
+    endif()
+    
+    # ZSTD
+    pkg_check_modules(ZSTD libzstd)
+    if(ZSTD_FOUND)
+        target_include_directories(btoon_core PUBLIC ${ZSTD_INCLUDE_DIRS})
+        target_link_libraries(btoon_core PUBLIC ${ZSTD_LIBRARIES})
+        target_compile_definitions(btoon_core PUBLIC BTOON_WITH_ZSTD)
+        message(STATUS "ZSTD compression enabled")
+    endif()
+    
+    # Brotli
+    pkg_check_modules(BROTLI_ENC libbrotlienc)
+    pkg_check_modules(BROTLI_DEC libbrotlidec)
+    if(BROTLI_ENC_FOUND AND BROTLI_DEC_FOUND)
+        target_include_directories(btoon_core PUBLIC ${BROTLI_ENC_INCLUDE_DIRS} ${BROTLI_DEC_INCLUDE_DIRS})
+        target_link_libraries(btoon_core PUBLIC ${BROTLI_ENC_LIBRARIES} ${BROTLI_DEC_LIBRARIES})
+        target_compile_definitions(btoon_core PUBLIC BTOON_WITH_BROTLI)
+        message(STATUS "Brotli compression enabled")
+    endif()
+    
+    # Snappy
+    pkg_check_modules(SNAPPY snappy)
+    if(SNAPPY_FOUND)
+        target_include_directories(btoon_core PUBLIC ${SNAPPY_INCLUDE_DIRS})
+        target_link_libraries(btoon_core PUBLIC ${SNAPPY_LIBRARIES})
+        target_compile_definitions(btoon_core PUBLIC BTOON_WITH_SNAPPY)
+        message(STATUS "Snappy compression enabled")
+    endif()
+endif()
+
 # Optional compression libraries
 if(BTOON_WITH_LZ4 AND LZ4_FOUND)
     target_include_directories(btoon_core PUBLIC ${LZ4_INCLUDE_DIRS})

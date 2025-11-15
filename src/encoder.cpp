@@ -13,6 +13,23 @@
 
 namespace btoon {
 
+// Define htonll if not available on this platform
+#ifndef htonll
+inline uint64_t htonll(uint64_t value) {
+    // Check endianness
+    static const int num = 42;
+    if (*reinterpret_cast<const char*>(&num) == num) {
+        // Little endian - swap bytes
+        const uint32_t high_part = htonl(static_cast<uint32_t>(value >> 32));
+        const uint32_t low_part = htonl(static_cast<uint32_t>(value & 0xFFFFFFFFLL));
+        return (static_cast<uint64_t>(low_part) << 32) | high_part;
+    } else {
+        // Big endian - no swap needed
+        return value;
+    }
+}
+#endif
+
 void Encoder::grow_buffer(size_t needed) {
     if (size_ + needed > capacity_) {
         size_t new_capacity = capacity_ == 0 ? 1024 : capacity_ * 2;
@@ -228,8 +245,32 @@ void Encoder::encodeMap(const std::map<std::string, std::vector<uint8_t>>& pairs
     }
 }
 
-void Encoder::encodeTimestamp(int64_t timestamp) {
-    encodeExtension(-1, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&timestamp), 8));
+void Encoder::encodeTimestamp(const Timestamp& timestamp) {
+    // Encode as extension type -1 (timestamp)
+    // Format: 8 bytes seconds + 4 bytes nanoseconds + optional 2 bytes timezone
+    
+    size_t data_size = 8 + 4;  // seconds + nanoseconds
+    if (timestamp.has_timezone) {
+        data_size += 2;  // timezone offset
+    }
+    
+    std::vector<uint8_t> data(data_size);
+    
+    // Encode seconds (big-endian)
+    uint64_t sec_be = htonll(static_cast<uint64_t>(timestamp.seconds));
+    std::memcpy(data.data(), &sec_be, 8);
+    
+    // Encode nanoseconds (big-endian)
+    uint32_t nano_be = htonl(timestamp.nanoseconds);
+    std::memcpy(data.data() + 8, &nano_be, 4);
+    
+    // Encode timezone if present (big-endian)
+    if (timestamp.has_timezone) {
+        uint16_t tz_be = htons(static_cast<uint16_t>(timestamp.timezone_offset));
+        std::memcpy(data.data() + 12, &tz_be, 2);
+    }
+    
+    encodeExtension(-1, data);
 }
 
 void Encoder::encodeDate(int64_t milliseconds) {
@@ -402,7 +443,7 @@ void Encoder::encode(const Value& value) {
             encodeMap(pairs);
         }
         else if constexpr (std::is_same_v<T, Extension>) encodeExtension(arg.type, arg.data);
-        else if constexpr (std::is_same_v<T, Timestamp>) encodeTimestamp(arg.seconds);
+        else if constexpr (std::is_same_v<T, Timestamp>) encodeTimestamp(arg);
         else if constexpr (std::is_same_v<T, Date>) encodeDate(arg.milliseconds);
         else if constexpr (std::is_same_v<T, DateTime>) encodeDateTime(arg.nanoseconds);
         else if constexpr (std::is_same_v<T, BigInt>) encodeBigInt(arg.bytes);

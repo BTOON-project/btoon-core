@@ -32,6 +32,8 @@ enum class CompressionAlgorithm : uint8_t {
     ZLIB = 0,
     LZ4 = 1,
     ZSTD = 2,
+    BROTLI = 3,
+    SNAPPY = 4,
     AUTO = 254  // Automatically select best algorithm
 };
 
@@ -141,6 +143,16 @@ std::vector<uint8_t> decompress_lz4(std::span<const uint8_t> compressed_data);
 #ifdef BTOON_WITH_ZSTD
 std::vector<uint8_t> compress_zstd(std::span<const uint8_t> data, int level);
 std::vector<uint8_t> decompress_zstd(std::span<const uint8_t> compressed_data);
+#endif
+
+#ifdef BTOON_WITH_BROTLI
+std::vector<uint8_t> compress_brotli(std::span<const uint8_t> data, int level);
+std::vector<uint8_t> decompress_brotli(std::span<const uint8_t> compressed_data);
+#endif
+
+#ifdef BTOON_WITH_SNAPPY
+std::vector<uint8_t> compress_snappy(std::span<const uint8_t> data);
+std::vector<uint8_t> decompress_snappy(std::span<const uint8_t> compressed_data);
 #endif
 
 } // namespace btoon

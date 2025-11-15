@@ -12,6 +12,15 @@
 #include <zstd.h>
 #endif
 
+#ifdef BTOON_WITH_BROTLI
+#include <brotli/encode.h>
+#include <brotli/decode.h>
+#endif
+
+#ifdef BTOON_WITH_SNAPPY
+#include <snappy.h>
+#endif
+
 #include <algorithm>
 #include <cstring>
 
@@ -96,6 +105,22 @@ int get_numeric_level(CompressionAlgorithm algo, CompressionLevel level) {
                 default: return 3;
             }
 #endif
+
+#ifdef BTOON_WITH_BROTLI
+        case CompressionAlgorithm::BROTLI:
+            switch (level) {
+                case CompressionLevel::FASTEST: return 0;
+                case CompressionLevel::FAST: return 2;
+                case CompressionLevel::BALANCED: return 6;
+                case CompressionLevel::HIGH: return 9;
+                case CompressionLevel::MAXIMUM: return 11; // Brotli max
+                default: return 6;
+            }
+#endif
+
+        case CompressionAlgorithm::SNAPPY:
+            // Snappy doesn't have compression levels
+            return 0;
             
         default:
             return 0;
@@ -197,6 +222,12 @@ float estimate_compression_ratio(CompressionAlgorithm algo, std::span<const uint
         case CompressionAlgorithm::ZSTD:
             return 0.45f + (0.45f * entropy_factor);
             
+        case CompressionAlgorithm::BROTLI:
+            return 0.4f + (0.5f * entropy_factor);  // Brotli typically achieves best compression
+            
+        case CompressionAlgorithm::SNAPPY:
+            return 0.75f + (0.2f * entropy_factor);  // Snappy prioritizes speed over ratio
+            
         default:
             return 1.0f;
     }
@@ -245,6 +276,16 @@ std::vector<uint8_t> compress(CompressionAlgorithm algorithm, std::span<const ui
         case CompressionAlgorithm::ZSTD:
             return compress_zstd(data, level);
 #endif
+
+#ifdef BTOON_WITH_BROTLI
+        case CompressionAlgorithm::BROTLI:
+            return compress_brotli(data, level == 0 ? 6 : level);
+#endif
+
+#ifdef BTOON_WITH_SNAPPY
+        case CompressionAlgorithm::SNAPPY:
+            return compress_snappy(data);
+#endif
         
         case CompressionAlgorithm::AUTO:
             // AUTO should have been resolved to a specific algorithm before calling this
@@ -271,6 +312,16 @@ std::vector<uint8_t> decompress(CompressionAlgorithm algorithm, std::span<const 
 #ifdef BTOON_WITH_ZSTD
         case CompressionAlgorithm::ZSTD:
             return decompress_zstd(compressed_data);
+#endif
+
+#ifdef BTOON_WITH_BROTLI
+        case CompressionAlgorithm::BROTLI:
+            return decompress_brotli(compressed_data);
+#endif
+
+#ifdef BTOON_WITH_SNAPPY
+        case CompressionAlgorithm::SNAPPY:
+            return decompress_snappy(compressed_data);
 #endif
         
         case CompressionAlgorithm::AUTO:
@@ -467,5 +518,117 @@ std::vector<uint8_t> decompress_zstd(std::span<const uint8_t> compressed_data) {
     return decompressed;
 }
 #endif
+
+#ifdef BTOON_WITH_BROTLI
+
+std::vector<uint8_t> compress_brotli(std::span<const uint8_t> data, int level) {
+    if (data.empty()) return {};
+    
+    // Clamp level to Brotli's valid range (0-11)
+    level = std::max(0, std::min(level, 11));
+    
+    size_t encoded_size = BrotliEncoderMaxCompressedSize(data.size());
+    std::vector<uint8_t> compressed(encoded_size);
+    
+    if (BrotliEncoderCompress(
+            level,
+            BROTLI_DEFAULT_WINDOW,
+            BROTLI_DEFAULT_MODE,
+            data.size(),
+            data.data(),
+            &encoded_size,
+            compressed.data()) == BROTLI_FALSE) {
+        throw BtoonException("Brotli compression failed");
+    }
+    
+    compressed.resize(encoded_size);
+    return compressed;
+}
+
+std::vector<uint8_t> decompress_brotli(std::span<const uint8_t> compressed_data) {
+    if (compressed_data.empty()) return {};
+    
+    // Estimate decompressed size (Brotli doesn't provide an exact size function)
+    // Start with 4x compressed size as initial guess
+    size_t estimated_size = compressed_data.size() * 4;
+    std::vector<uint8_t> decompressed;
+    
+    BrotliDecoderState* state = BrotliDecoderCreateInstance(nullptr, nullptr, nullptr);
+    if (!state) {
+        throw BtoonException("Failed to create Brotli decoder");
+    }
+    
+    const uint8_t* next_in = compressed_data.data();
+    size_t available_in = compressed_data.size();
+    
+    BrotliDecoderResult result;
+    do {
+        size_t old_size = decompressed.size();
+        decompressed.resize(old_size + estimated_size);
+        
+        uint8_t* next_out = decompressed.data() + old_size;
+        size_t available_out = estimated_size;
+        
+        result = BrotliDecoderDecompressStream(
+            state,
+            &available_in,
+            &next_in,
+            &available_out,
+            &next_out,
+            nullptr
+        );
+        
+        // Resize to actual output size
+        decompressed.resize(old_size + (estimated_size - available_out));
+        
+    } while (result == BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT);
+    
+    BrotliDecoderDestroyInstance(state);
+    
+    if (result != BROTLI_DECODER_RESULT_SUCCESS) {
+        throw BtoonException("Brotli decompression failed");
+    }
+    
+    return decompressed;
+}
+
+#endif // BTOON_WITH_BROTLI
+
+#ifdef BTOON_WITH_SNAPPY
+
+std::vector<uint8_t> compress_snappy(std::span<const uint8_t> data) {
+    if (data.empty()) return {};
+    
+    std::string compressed;
+    snappy::Compress(reinterpret_cast<const char*>(data.data()), 
+                     data.size(), &compressed);
+    
+    return std::vector<uint8_t>(compressed.begin(), compressed.end());
+}
+
+std::vector<uint8_t> decompress_snappy(std::span<const uint8_t> compressed_data) {
+    if (compressed_data.empty()) return {};
+    
+    size_t uncompressed_length;
+    if (!snappy::GetUncompressedLength(
+            reinterpret_cast<const char*>(compressed_data.data()),
+            compressed_data.size(),
+            &uncompressed_length)) {
+        throw BtoonException("Invalid Snappy compressed data");
+    }
+    
+    std::vector<uint8_t> decompressed(uncompressed_length);
+    
+    if (!snappy::RawUncompress(
+            reinterpret_cast<const char*>(compressed_data.data()),
+            compressed_data.size(),
+            reinterpret_cast<char*>(decompressed.data()))) {
+        throw BtoonException("Snappy decompression failed");
+    }
+    
+    return decompressed;
+}
+
+#endif // BTOON_WITH_SNAPPY
 
 } // namespace btoon
