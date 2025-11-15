@@ -139,4 +139,5 @@ benchmark_results/
 # Documentation builds
 docs/_build/
 docs/.doctrees/
+docs/api/
 

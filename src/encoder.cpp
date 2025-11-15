@@ -219,7 +219,7 @@ void Encoder::encodeColumnar(const Array& data) {
             else if constexpr (std::is_same_v<T, Int>) schema_bytes.push_back(2);
             else if constexpr (std::is_same_v<T, Uint>) schema_bytes.push_back(3);
             else if constexpr (std::is_same_v<T, Float>) schema_bytes.push_back(4);
-            else if constexpr (std::is_same_v<T, String> || std::is_same_v<T, StringView>) schema_bytes.push_back(5);
+            else if constexpr (std::is_same_v<T, String>) schema_bytes.push_back(5);
             else schema_bytes.push_back(0); // Default to unknown
         }, val);
     }
@@ -254,21 +254,13 @@ void Encoder::encode(const Value& value) {
         else if constexpr (std::is_same_v<T, Uint>) encodeUint(arg);
         else if constexpr (std::is_same_v<T, Float>) encodeFloat(arg);
         else if constexpr (std::is_same_v<T, String>) encodeString(arg);
-        else if constexpr (std::is_same_v<T, StringView>) encodeString({arg.data(), arg.size()});
         else if constexpr (std::is_same_v<T, Binary>) encodeBinary(arg);
-        else if constexpr (std::is_same_v<T, Extension>) encodeExtension(arg.type, arg.data);
-        else if constexpr (std::is_same_v<T, Timestamp>) encodeTimestamp(arg.seconds);
-        else if constexpr (std::is_same_v<T, Date>) encodeDate(arg.milliseconds);
-        else if constexpr (std::is_same_v<T, DateTime>) encodeDateTime(arg.nanoseconds);
-        else if constexpr (std::is_same_v<T, BigInt>) encodeBigInt(arg.bytes);
-        else if constexpr (std::is_same_v<T, VectorFloat>) encodeVectorFloat(arg);
-        else if constexpr (std::is_same_v<T, VectorDouble>) encodeVectorDouble(arg);
-        else if constexpr (std::is_same_v<T, Array>) {
-            if (is_tabular(arg)) {
+        else if constexpr (std::is_same_v<T, std::vector<Value>>) {
+            if (options_.auto_tabular && is_tabular(arg)) {
                 encodeColumnar(arg);
             } else {
                 std::vector<std::vector<uint8_t>> elements;
-                for(const auto& v : arg) {
+                for (const auto& v : arg) {
                     Encoder temp_encoder;
                     temp_encoder.encode(v);
                     auto buf = temp_encoder.getBuffer();
@@ -277,17 +269,24 @@ void Encoder::encode(const Value& value) {
                 encodeArray(elements);
             }
         }
-        else if constexpr (std::is_same_v<T, Map>) {
-            // This is inefficient and will be replaced
+        else if constexpr (std::is_same_v<T, std::map<String, Value>>) {
             std::map<std::string, std::vector<uint8_t>> pairs;
-            for(const auto& [k, v] : arg) {
+            for (const auto& [key, val] : arg) {
                 Encoder temp_encoder;
-                temp_encoder.encode(v);
+                temp_encoder.encode(val);
                 auto buf = temp_encoder.getBuffer();
-                pairs[k] = {buf.begin(), buf.end()};
+                pairs[key] = std::vector<uint8_t>(buf.begin(), buf.end());
             }
             encodeMap(pairs);
         }
+        else if constexpr (std::is_same_v<T, Extension>) encodeExtension(arg.type, arg.data);
+        else if constexpr (std::is_same_v<T, Timestamp>) encodeTimestamp(arg.seconds);
+        else if constexpr (std::is_same_v<T, Date>) encodeDate(arg.milliseconds);
+        else if constexpr (std::is_same_v<T, DateTime>) encodeDateTime(arg.nanoseconds);
+        else if constexpr (std::is_same_v<T, BigInt>) encodeBigInt(arg.bytes);
+        else if constexpr (std::is_same_v<T, VectorFloat>) encodeVectorFloat(arg);
+        else if constexpr (std::is_same_v<T, VectorDouble>) encodeVectorDouble(arg);
+        else { throw BtoonException("Unsupported type for encoding"); }
     }, value);
 }
 

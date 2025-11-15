@@ -164,8 +164,9 @@ private:
 
     const Security* security_ = nullptr; /**< Pointer to Security object for HMAC signing. */
     bool useSecurity_ = false;           /**< Flag to enable/disable security signing. */
-    MemoryPool* pool_;                   /**< Pointer to MemoryPool for allocations. */
+    MemoryPool* pool_ = nullptr;                   /**< Pointer to MemoryPool for allocations. */
     bool owns_pool_ = false;             /**< Flag to indicate if the Encoder owns the MemoryPool. */
+    EncodeOptions options_;              /**< Encoding options for the encoder. */
     std::vector<uint8_t> buffer_;        /**< Buffer for encoded data. */
 };
 

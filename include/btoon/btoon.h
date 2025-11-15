@@ -42,11 +42,7 @@ using Int = int64_t;
 using Uint = uint64_t;
 using Float = double;
 using String = std::string;
-using StringView = std::string_view;
 using Binary = std::vector<uint8_t>;
-using BinaryView = std::span<const uint8_t>;
-using Array = std::vector<Value>;
-using Map = std::map<String, Value>;
 
 struct VectorFloat {
     std::vector<float> data;
@@ -60,8 +56,6 @@ struct VectorFloat {
     }
 };
 
-using VectorFloatView = std::span<const float>;
-
 struct VectorDouble {
     std::vector<double> data;
 
@@ -74,26 +68,12 @@ struct VectorDouble {
     }
 };
 
-using VectorDoubleView = std::span<const double>;
-
-inline bool operator==(const BinaryView& lhs, const BinaryView& rhs) {
-    return std::equal(lhs.begin(), lhs.end(), rhs.begin(), rhs.end());
-}
-
-inline bool operator==(const VectorFloatView& lhs, const VectorFloatView& rhs) {
-    return std::equal(lhs.begin(), lhs.end(), rhs.begin(), rhs.end());
-}
-
-inline bool operator==(const VectorDoubleView& lhs, const VectorDoubleView& rhs) {
-    return std::equal(lhs.begin(), lhs.end(), rhs.begin(), rhs.end());
-}
-
 struct Extension {
     int8_t type;
-    std::span<const uint8_t> data;
+    std::vector<uint8_t> data;
 
     bool operator==(const Extension& other) const {
-        return type == other.type && std::equal(data.begin(), data.end(), other.data.begin(), other.data.end());
+        return type == other.type && data == other.data;
     }
 
     bool operator<(const Extension& other) const {
@@ -141,10 +121,10 @@ struct DateTime {
 };
 
 struct BigInt {
-    std::span<const uint8_t> bytes;
+    std::vector<uint8_t> bytes;
 
     bool operator==(const BigInt& other) const {
-        return std::equal(bytes.begin(), bytes.end(), other.bytes.begin(), other.bytes.end());
+        return bytes == other.bytes;
     }
 
     bool operator<(const BigInt& other) const {
@@ -159,20 +139,16 @@ struct Value : std::variant<
     Uint,
     Float,
     String,
-    StringView,
     Binary,
-    BinaryView,
-    Array,
-    Map,
+    std::vector<struct Value>,
+    std::map<String, struct Value>,
     Extension,
     Timestamp,
     Date,
     DateTime,
     BigInt,
     VectorFloat,
-    VectorFloatView,
-    VectorDouble,
-    VectorDoubleView
+    VectorDouble
 > {
     using variant::variant;
     const char* type_name() const;
@@ -187,14 +163,13 @@ struct Value : std::variant<
             if (!other_arg) {
                 return false;
             }
-            if constexpr (std::is_same_v<T, StringView> || std::is_same_v<T, BinaryView> || std::is_same_v<T, VectorFloatView> || std::is_same_v<T, VectorDoubleView>) {
-                return std::equal(arg.begin(), arg.end(), other_arg->begin(), other_arg->end());
-            } else {
-                return arg == *other_arg;
-            }
+            return arg == *other_arg;
         }, *this);
     }
 };
+
+using Array = std::vector<Value>;
+using Map = std::map<String, Value>;
 
 struct EncodeOptions {
     bool compress = false;

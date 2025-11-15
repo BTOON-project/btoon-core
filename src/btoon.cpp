@@ -30,20 +30,17 @@ const char* Value::type_name() const {
         else if constexpr (std::is_same_v<T, Uint>) return "uint";
         else if constexpr (std::is_same_v<T, Float>) return "float";
         else if constexpr (std::is_same_v<T, String>) return "string";
-        else if constexpr (std::is_same_v<T, StringView>) return "string";
         else if constexpr (std::is_same_v<T, Binary>) return "binary";
-        else if constexpr (std::is_same_v<T, BinaryView>) return "binary";
+        else if constexpr (std::is_same_v<T, Array>) return "array";
+        else if constexpr (std::is_same_v<T, Map>) return "map";
         else if constexpr (std::is_same_v<T, Extension>) return "extension";
         else if constexpr (std::is_same_v<T, Timestamp>) return "timestamp";
         else if constexpr (std::is_same_v<T, Date>) return "date";
         else if constexpr (std::is_same_v<T, DateTime>) return "datetime";
         else if constexpr (std::is_same_v<T, BigInt>) return "bigint";
         else if constexpr (std::is_same_v<T, VectorFloat>) return "vector_float";
-        else if constexpr (std::is_same_v<T, VectorFloatView>) return "vector_float";
         else if constexpr (std::is_same_v<T, VectorDouble>) return "vector_double";
-        else if constexpr (std::is_same_v<T, VectorDoubleView>) return "vector_double";
-        else if constexpr (std::is_same_v<T, Array>) return "array";
-        else if constexpr (std::is_same_v<T, Map>) return "map";
+        else return "unknown";
     }, *this);
 }
 

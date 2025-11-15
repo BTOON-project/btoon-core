@@ -40,14 +40,13 @@ Value Decoder::decode(std::span<const uint8_t> buffer, size_t& pos) const {
         case 0xc0: return Value(decodeNil(pos));
         case 0xc2: case 0xc3: return Value(decodeBool(buffer, pos));
         case 0xc4: case 0xc5: case 0xc6: return Value(decodeBinary(buffer, pos));
-        case 0xc7: case 0xc8: case 0xc9: return decodeExtension(buffer, pos);
         case 0xca: case 0xcb: return Value(decodeFloat(buffer, pos));
         case 0xcc: case 0xcd: case 0xce: case 0xcf: return Value(decodeUint(buffer, pos));
         case 0xd0: case 0xd1: case 0xd2: case 0xd3: return Value(decodeInt(buffer, pos));
-        case 0xd4: case 0xd5: case 0xd6: case 0xd7: case 0xd8: return decodeExtension(buffer, pos);
-        case 0xd9: case 0xda: case 0xdb: return Value(decodeString(buffer, pos));
-        case 0xdc: case 0xdd: return Value(decodeArray(buffer, pos));
-        case 0xde: case 0xdf: return Value(decodeMap(buffer, pos));
+        case 0xd4: case 0xd5: case 0xd6: case 0xd7: case 0xd8: // Fixed extensions
+        case 0xc7: case 0xc8: case 0xc9: { // Variable extensions
+            return decodeExtension(buffer, pos);
+        }
         default: throw BtoonException("Unknown marker");
     }
 }
@@ -167,28 +166,22 @@ Map Decoder::decodeMap(std::span<const uint8_t> buffer, size_t& pos) const {
 Value Decoder::decodeExtension(std::span<const uint8_t> buffer, size_t& pos) const {
     uint8_t marker = buffer[pos++];
     size_t len = 0;
-    if (marker == 0xd4) len = 1;
-    else if (marker == 0xd5) len = 2;
-    else if (marker == 0xd6) len = 4;
-    else if (marker == 0xd7) len = 8;
-    else if (marker == 0xd8) len = 16;
+    if (marker == 0xd4) { len = 1; }
+    else if (marker == 0xd5) { len = 2; }
+    else if (marker == 0xd6) { len = 4; }
+    else if (marker == 0xd7) { len = 8; }
+    else if (marker == 0xd8) { len = 16; }
     else if (marker == 0xc7) { check_overflow(pos, 1, buffer.size()); len = buffer[pos]; pos += 1; }
     else if (marker == 0xc8) { check_overflow(pos, 2, buffer.size()); uint16_t l; std::memcpy(&l, &buffer[pos], 2); len = ntohs(l); pos += 2; }
     else if (marker == 0xc9) { check_overflow(pos, 4, buffer.size()); uint32_t l; std::memcpy(&l, &buffer[pos], 4); len = ntohl(l); pos += 4; }
     else { throw BtoonException("Invalid extension marker"); }
-    
+
     check_overflow(pos, 1, buffer.size());
     int8_t ext_type = buffer[pos++];
 
-    check_overflow(pos, len, buffer.size());
     switch (ext_type) {
-        case -1: return decodeDate(buffer, pos, len);
-        case -2: return decodeDateTime(buffer, pos, len);
-        case 0: return decodeBigInt(buffer, pos, len);
-        case -3: return decodeVectorFloat(buffer, pos, len);
-        case -4: return decodeVectorDouble(buffer, pos, len);
-        case -10: {
-            size_t start_pos = pos;
+        case -10: { // Tabular data
+            // --- Header ---
             uint32_t version;
             std::memcpy(&version, &buffer[pos], 4);
             version = ntohl(version);
@@ -203,40 +196,75 @@ Value Decoder::decodeExtension(std::span<const uint8_t> buffer, size_t& pos) con
             num_columns = ntohl(num_columns);
             pos += 4;
 
-            std::vector<std::string> column_names;
-            for (uint32_t i = 0; i < num_columns; ++i) {
-                uint32_t name_len;
-                std::memcpy(&name_len, &buffer[pos], 4);
-                name_len = ntohl(name_len);
-                pos += 4;
-                column_names.emplace_back(reinterpret_cast<const char*>(&buffer[pos]), name_len);
-                pos += name_len;
-            }
-
-            pos += num_columns; // Skip type info for now
-
             uint32_t num_rows;
             std::memcpy(&num_rows, &buffer[pos], 4);
             num_rows = ntohl(num_rows);
             pos += 4;
 
-            Array arr;
-            arr.reserve(num_rows);
-            for (uint32_t i = 0; i < num_rows; ++i) {
-                Map row;
-                for (uint32_t j = 0; j < num_columns; ++j) {
-                    row[column_names[j]] = decode(buffer, pos);
-                }
-                arr.push_back(row);
+            // --- Schema Section ---
+            std::vector<std::string> column_names;
+            std::vector<uint8_t> column_types;
+            for (uint32_t i = 0; i < num_columns; ++i) {
+                uint32_t name_len;
+                std::memcpy(&name_len, &buffer[pos], 4);
+                name_len = ntohl(name_len);
+                pos += 4;
+
+                column_names.emplace_back(reinterpret_cast<const char*>(&buffer[pos]), name_len);
+                pos += name_len;
+
+                column_types.push_back(buffer[pos]);
+                pos += 1;
             }
-            pos = start_pos + len;
+
+            // --- Data Section ---
+            Array arr(num_rows);
+            for (uint32_t i = 0; i < num_rows; ++i) {
+                arr[i] = Map{};
+            }
+
+            for (uint32_t i = 0; i < num_columns; ++i) {
+                uint32_t column_len;
+                std::memcpy(&column_len, &buffer[pos], 4);
+                column_len = ntohl(column_len);
+                pos += 4;
+
+                size_t column_data_start = pos;
+                for (uint32_t j = 0; j < num_rows; ++j) {
+                    auto& row_map = std::get<Map>(arr[j]);
+                    Value decoded_value = decode(buffer, pos);
+                    // TODO: Validate type against schema (column_types[i])
+                    row_map[column_names[i]] = decoded_value;
+                }
+                pos = column_data_start + column_len;
+            }
             return arr;
         }
-        default: {
+        case -1: { // Timestamp
+            if (len != 4 && len != 8) throw BtoonException("Invalid timestamp length");
+            int64_t seconds = 0;
+            if (len == 4) {
+                uint32_t val;
+                std::memcpy(&val, &buffer[pos], 4);
+                seconds = ntohl(val);
+            } else if (len == 8) {
+                uint64_t val;
+                std::memcpy(&val, &buffer[pos], 8);
+                seconds = ntohll(val);
+            }
+            pos += len;
+            return Timestamp{seconds};
+        }
+        case -2: return decodeDate(buffer, pos, len - 1);
+        case -3: return decodeDateTime(buffer, pos, len - 1);
+        case -4: return decodeBigInt(buffer, pos, len - 1);
+        case -5: return decodeVectorFloat(buffer, pos, len - 1);
+        case -6: return decodeVectorDouble(buffer, pos, len - 1);
+        default: { // Generic extension
             Extension ext;
             ext.type = ext_type;
-            ext.data = buffer.subspan(pos, len);
-            pos += len;
+            ext.data.assign(buffer.begin() + pos, buffer.begin() + pos + len - 1); // len - 1 because ext_type is already read
+            pos += (len - 1);
             return ext;
         }
     }
@@ -259,10 +287,11 @@ DateTime Decoder::decodeDateTime(std::span<const uint8_t> buffer, size_t& pos, s
 }
 
 BigInt Decoder::decodeBigInt(std::span<const uint8_t> buffer, size_t& pos, size_t len) const {
-    BigInt bigint;
-    bigint.bytes = buffer.subspan(pos, len);
+    check_overflow(pos, len, buffer.size());
+    BigInt bi;
+    bi.bytes.assign(buffer.begin() + pos, buffer.begin() + pos + len);
     pos += len;
-    return bigint;
+    return bi;
 }
 
 VectorFloat Decoder::decodeVectorFloat(std::span<const uint8_t> buffer, size_t& pos, size_t len) const {
@@ -285,10 +314,6 @@ VectorDouble Decoder::decodeVectorDouble(std::span<const uint8_t> buffer, size_t
     return vec;
 }
 
-Timestamp Decoder::decodeTimestamp(std::span<const uint8_t> buffer, size_t& pos) const {
-    // This is incorrect, timestamp is an extension type
-    return {0};
-}
 
 std::span<const uint8_t> Decoder::verifyAndExtractData(std::span<const uint8_t> buffer) const {
     if (useSecurity_) {

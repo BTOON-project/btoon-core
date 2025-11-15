@@ -86,7 +86,7 @@ private:
     Binary decodeBinary(std::span<const uint8_t> buffer, size_t& pos) const;
     Array decodeArray(std::span<const uint8_t> buffer, size_t& pos) const;
     Map decodeMap(std::span<const uint8_t> buffer, size_t& pos) const;
-    Timestamp decodeTimestamp(std::span<const uint8_t> buffer, size_t& pos) const;
+
     Value decodeExtension(std::span<const uint8_t> buffer, size_t& pos) const;
     Date decodeDate(std::span<const uint8_t> buffer, size_t& pos, size_t len) const;
     DateTime decodeDateTime(std::span<const uint8_t> buffer, size_t& pos, size_t len) const;
