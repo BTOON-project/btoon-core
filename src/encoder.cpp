@@ -21,7 +21,8 @@ void Encoder::grow_buffer(size_t needed) {
         }
         uint8_t* new_buffer = static_cast<uint8_t*>(pool_->allocate(new_capacity));
         if (buffer_) {
-            std::memcpy(new_buffer, buffer_, size_);
+            // Use SIMD-optimized copy for better performance
+            simd_copy(new_buffer, buffer_, size_);
             pool_->deallocate(buffer_, capacity_);
         }
         buffer_ = new_buffer;
@@ -139,7 +140,12 @@ void Encoder::encodeString(const std::string& value) {
         std::memcpy(buffer_ + size_, &be_len, 4);
         size_ += 4;
     }
-    std::memcpy(buffer_ + size_, value.data(), len);
+    // Use SIMD copy for strings longer than 32 bytes
+    if (len > 32) {
+        simd_copy(buffer_ + size_, reinterpret_cast<const uint8_t*>(value.data()), len);
+    } else {
+        std::memcpy(buffer_ + size_, value.data(), len);
+    }
     size_ += len;
 }
 
@@ -162,7 +168,12 @@ void Encoder::encodeBinary(std::span<const uint8_t> value) {
         std::memcpy(buffer_ + size_, &be_len, 4);
         size_ += 4;
     }
-    std::memcpy(buffer_ + size_, value.data(), len);
+    // Use SIMD copy for binary data longer than 32 bytes
+    if (len > 32) {
+        simd_copy(buffer_ + size_, value.data(), len);
+    } else {
+        std::memcpy(buffer_ + size_, value.data(), len);
+    }
     size_ += len;
 }
 
@@ -418,13 +429,41 @@ void Encoder::addSignatureIfEnabled() {
 }
 
 void Encoder::simd_copy(uint8_t* dst, const uint8_t* src, size_t size) const {
+    size_t i = 0;
+    
 #if defined(__AVX2__)
-    // AVX implementation
+    // AVX2 can process 32 bytes at a time
+    const size_t simd_width = 32;
+    size_t simd_iterations = size / simd_width;
+    
+    for (; i < simd_iterations * simd_width; i += simd_width) {
+        __m256i data = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), data);
+    }
+#elif defined(__SSE2__)
+    // SSE2 can process 16 bytes at a time
+    const size_t simd_width = 16;
+    size_t simd_iterations = size / simd_width;
+    
+    for (; i < simd_iterations * simd_width; i += simd_width) {
+        __m128i data = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), data);
+    }
 #elif defined(__ARM_NEON)
-    // NEON implementation
-#else
-    std::memcpy(dst, src, size);
+    // NEON can process 16 bytes at a time
+    const size_t simd_width = 16;
+    size_t simd_iterations = size / simd_width;
+    
+    for (; i < simd_iterations * simd_width; i += simd_width) {
+        uint8x16_t data = vld1q_u8(src + i);
+        vst1q_u8(dst + i, data);
+    }
 #endif
+    
+    // Handle remaining bytes with regular memcpy
+    if (i < size) {
+        std::memcpy(dst + i, src + i, size - i);
+    }
 }
 
 } // namespace btoon

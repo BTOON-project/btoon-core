@@ -204,6 +204,7 @@ if(BUILD_TESTS)
         tests/test_capi.cpp
         tests/test_streaming.cpp
         tests/test_schema.cpp
+        tests/test_performance.cpp
     )
     target_link_libraries(btoon_tests
         PRIVATE
