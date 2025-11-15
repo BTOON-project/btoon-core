@@ -392,11 +392,11 @@ Value read_input(const std::string& filename, Format fmt, const ConvertOptions& 
         }
         
         file.seekg(0, std::ios::end);
-        size_t size = file.tellg();
+        size_t size = static_cast<size_t>(file.tellg());
         file.seekg(0, std::ios::beg);
         
         std::vector<uint8_t> buffer(size);
-        file.read(reinterpret_cast<char*>(buffer.data()), size);
+        file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(size));
         
         DecodeOptions decode_opts;
         decode_opts.auto_decompress = true;
@@ -455,7 +455,7 @@ void write_output(const std::string& filename, const Value& data, Format fmt, co
             throw std::runtime_error("Cannot create file: " + filename);
         }
         
-        file.write(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+        file.write(reinterpret_cast<const char*>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
     } else if (fmt == Format::JSON) {
         std::ofstream file(filename);
         if (!file) {
@@ -652,11 +652,11 @@ void write_yaml(std::ostream& output, const Value& data, bool pretty) {
 Value read_msgpack(std::istream& input) {
     // Read entire file
     input.seekg(0, std::ios::end);
-    size_t size = input.tellg();
+    size_t size = static_cast<size_t>(input.tellg());
     input.seekg(0, std::ios::beg);
     
     std::vector<uint8_t> buffer(size);
-    input.read(reinterpret_cast<char*>(buffer.data()), size);
+    input.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(size));
     
     // BTOON is MessagePack-compatible, so we can decode directly
     return decode(buffer);
@@ -665,7 +665,7 @@ Value read_msgpack(std::istream& input) {
 void write_msgpack(std::ostream& output, const Value& data) {
     // BTOON is MessagePack-compatible
     auto encoded = encode(data);
-    output.write(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+    output.write(reinterpret_cast<const char*>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
 }
 
 Value read_cbor(std::istream& input) {
@@ -689,7 +689,7 @@ void write_xml(std::ostream& output, const Value& data, bool pretty) {
     output << "<root>" << std::endl;
     
     std::function<void(const Value&, int)> write_value = [&](const Value& v, int indent) {
-        std::string ind(indent * 2, ' ');
+        std::string ind(static_cast<size_t>(indent * 2), ' ');
         
         std::visit([&](auto&& arg) {
             using T = std::decay_t<decltype(arg)>;

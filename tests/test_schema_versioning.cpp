@@ -151,7 +151,7 @@ TEST_F(SchemaVersioningTest, FieldManagement) {
         .build();
     
     // Add field
-    SchemaField new_field{"status", "string", false, String("active")};
+    SchemaField new_field{"status", "string", false, String("active"), std::nullopt, std::nullopt};
     schema->addField(new_field);
     
     auto field = schema->getField("status");
@@ -396,9 +396,9 @@ TEST_F(SchemaVersioningTest, PredefinedSchemas) {
     
     // Table schema with custom columns
     std::vector<SchemaField> columns = {
-        {"id", "int", true},
-        {"name", "string", true},
-        {"balance", "float", false, Float(0.0)}
+        {"id", "int", true, std::nullopt, std::nullopt, std::nullopt},
+        {"name", "string", true, std::nullopt, std::nullopt, std::nullopt},
+        {"balance", "float", false, Float(0.0), std::nullopt, std::nullopt}
     };
     auto table_schema = schemas::createTable(columns);
     

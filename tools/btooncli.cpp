@@ -50,7 +50,6 @@ json btoon_to_json(const Value& v) {
         if constexpr (std::is_same_v<T, Uint>) return arg;
         if constexpr (std::is_same_v<T, Float>) return arg;
         if constexpr (std::is_same_v<T, String>) return arg;
-        if constexpr (std::is_same_v<T, StringView>) return std::string(arg);
         if constexpr (std::is_same_v<T, Binary>) return arg;
         if constexpr (std::is_same_v<T, Array>) {
             json j = json::array();
@@ -122,7 +121,7 @@ int main(int argc, char** argv) {
             auto encoded = encode(v, opts);
             
             std::ofstream ofs(output_file, std::ios::binary);
-            ofs.write((const char*)encoded.data(), encoded.size());
+            ofs.write((const char*)encoded.data(), static_cast<std::streamsize>(encoded.size()));
             
             std::cout << "Encoded " << input_file << " to " << output_file << std::endl;
 
@@ -131,7 +130,7 @@ int main(int argc, char** argv) {
             std::vector<uint8_t> buffer((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
             
             DecodeOptions opts;
-            opts.decompress = compress; // Use same flag for simplicity
+            opts.auto_decompress = compress; // Use same flag for simplicity
             
             Value v = decode(buffer, opts);
             json j = btoon_to_json(v);

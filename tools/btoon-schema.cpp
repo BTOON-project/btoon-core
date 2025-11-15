@@ -229,7 +229,7 @@ int cmd_generate(int argc, char* argv[]) {
         std::string class_name = schema.getName();
         // Capitalize first letter
         if (!class_name.empty()) {
-            class_name[0] = std::toupper(class_name[0]);
+            class_name[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(class_name[0])));
         }
         
         code << "namespace btoon {" << std::endl;
@@ -344,7 +344,7 @@ int cmd_generate(int argc, char* argv[]) {
         std::string class_name = schema.getName();
         // Capitalize first letter
         if (!class_name.empty()) {
-            class_name[0] = std::toupper(class_name[0]);
+            class_name[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(class_name[0])));
         }
         
         code << "@dataclass" << std::endl;
@@ -425,7 +425,7 @@ int cmd_generate(int argc, char* argv[]) {
         std::string interface_name = schema.getName();
         // Capitalize first letter
         if (!interface_name.empty()) {
-            interface_name[0] = std::toupper(interface_name[0]);
+            interface_name[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(interface_name[0])));
         }
         
         code << "export interface " << interface_name << " {" << std::endl;
@@ -812,11 +812,11 @@ std::vector<uint8_t> read_file(const std::string& path) {
     }
     
     file.seekg(0, std::ios::end);
-    size_t size = file.tellg();
+    size_t size = static_cast<size_t>(file.tellg());
     file.seekg(0, std::ios::beg);
     
     std::vector<uint8_t> buffer(size);
-    file.read(reinterpret_cast<char*>(buffer.data()), size);
+    file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(size));
     
     return buffer;
 }
@@ -827,7 +827,7 @@ void write_file(const std::string& path, const std::vector<uint8_t>& data) {
         throw std::runtime_error("Cannot create file: " + path);
     }
     
-    file.write(reinterpret_cast<const char*>(data.data()), data.size());
+    file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
 }
 
 void write_file(const std::string& path, const std::string& content) {
@@ -911,7 +911,7 @@ std::string value_to_json_string(const Value& v, bool pretty) {
             j = json::binary(arg);
         } else if constexpr (std::is_same_v<T, Array>) {
             j = json::array();
-            for (const auto& item : arg) {
+            for (size_t i = 0; i < arg.size(); ++i) {
                 json item_json;
                 // Recursive conversion would be needed here
                 j.push_back(item_json);
