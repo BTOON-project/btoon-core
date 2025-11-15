@@ -1,0 +1,269 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.0.1)'
+        required: true
+
+env:
+  CMAKE_VERSION: '3.20'
+  BTOON_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+
+jobs:
+  # Build native binaries for multiple platforms
+  build-native:
+    name: Build ${{ matrix.os }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x64
+          - os: linux
+            arch: x64
+            runner: ubuntu-20.04
+            cmake_arch: x64
+            
+          # Linux ARM64
+          - os: linux
+            arch: arm64
+            runner: ubuntu-20.04
+            cmake_arch: aarch64
+            
+          # macOS x64
+          - os: darwin
+            arch: x64
+            runner: macos-11
+            cmake_arch: x86_64
+            
+          # macOS ARM64 (M1/M2)
+          - os: darwin
+            arch: arm64
+            runner: macos-11
+            cmake_arch: arm64
+            
+          # Windows x64
+          - os: windows
+            arch: x64
+            runner: windows-2019
+            cmake_arch: x64
+            
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          
+      - name: Setup build environment
+        if: matrix.os == 'linux' && matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          
+      - name: Install dependencies (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev libssl-dev liblz4-dev libzstd-dev
+          
+      - name: Install dependencies (macOS)
+        if: matrix.os == 'darwin'
+        run: |
+          brew install zlib openssl lz4 zstd
+          
+      - name: Install dependencies (Windows)
+        if: matrix.os == 'windows'
+        run: |
+          vcpkg install zlib:x64-windows openssl:x64-windows lz4:x64-windows zstd:x64-windows
+          
+      - name: Configure CMake
+        run: |
+          mkdir build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=20 \
+            -DBUILD_SHARED_LIBS=ON \
+            -DBUILD_TOOLS=ON \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            ${{ matrix.os == 'windows' && '-G "Visual Studio 16 2019" -A ' + matrix.cmake_arch || '' }} \
+            ${{ matrix.arch == 'arm64' && matrix.os == 'linux' && '-DCMAKE_TOOLCHAIN_FILE=../cmake/toolchain-linux-arm64.cmake' || '' }} \
+            ${{ matrix.arch == 'arm64' && matrix.os == 'darwin' && '-DCMAKE_OSX_ARCHITECTURES=arm64' || '' }}
+            
+      - name: Build
+        run: |
+          cd build
+          cmake --build . --config Release --parallel
+          
+      - name: Package binaries
+        run: |
+          mkdir -p release/btoon-${{ env.BTOON_VERSION }}-${{ matrix.os }}-${{ matrix.arch }}
+          cd release/btoon-${{ env.BTOON_VERSION }}-${{ matrix.os }}-${{ matrix.arch }}
+          
+          # Copy binaries
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            cp ../../build/Release/*.exe .
+            cp ../../build/Release/*.dll .
+            cp ../../build/Release/*.lib .
+          else
+            cp ../../build/btoon* . 2>/dev/null || true
+            cp ../../build/*.so* . 2>/dev/null || true
+            cp ../../build/*.dylib* . 2>/dev/null || true
+            cp ../../build/*.a . 2>/dev/null || true
+          fi
+          
+          # Copy headers
+          mkdir -p include/btoon
+          cp -r ../../include/btoon/* include/btoon/
+          
+          # Create archive
+          cd ..
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            7z a btoon-${{ env.BTOON_VERSION }}-${{ matrix.os }}-${{ matrix.arch }}.zip btoon-${{ env.BTOON_VERSION }}-${{ matrix.os }}-${{ matrix.arch }}
+          else
+            tar czf btoon-${{ env.BTOON_VERSION }}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz btoon-${{ env.BTOON_VERSION }}-${{ matrix.os }}-${{ matrix.arch }}
+          fi
+        shell: bash
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: btoon-${{ matrix.os }}-${{ matrix.arch }}
+          path: release/btoon-*.*
+          
+  # Build WebAssembly version
+  build-wasm:
+    name: Build WebAssembly
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v11
+        with:
+          version: 3.1.24
+          
+      - name: Build WASM
+        run: |
+          mkdir build-wasm
+          cd build-wasm
+          emcmake cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=20 \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_EXAMPLES=OFF
+          emmake make -j$(nproc)
+          
+      - name: Package WASM
+        run: |
+          mkdir -p release/btoon-${{ env.BTOON_VERSION }}-wasm
+          cp build-wasm/*.wasm release/btoon-${{ env.BTOON_VERSION }}-wasm/
+          cp build-wasm/*.js release/btoon-${{ env.BTOON_VERSION }}-wasm/
+          cd release
+          tar czf btoon-${{ env.BTOON_VERSION }}-wasm.tar.gz btoon-${{ env.BTOON_VERSION }}-wasm
+          
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: btoon-wasm
+          path: release/btoon-*.tar.gz
+          
+  # Create release with all artifacts
+  create-release:
+    name: Create Release
+    needs: [build-native, build-wasm]
+    runs-on: ubuntu-20.04
+    permissions:
+      contents: write
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts/
+          
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          find . -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec mv {} . \;
+          sha256sum * > SHA256SUMS
+          md5sum * > MD5SUMS
+          
+      - name: Create release notes
+        run: |
+          cat > RELEASE_NOTES.md << EOF
+          # BTOON ${{ env.BTOON_VERSION }}
+          
+          ## Downloads
+          
+          ### Binaries
+          - Linux x64: \`btoon-${{ env.BTOON_VERSION }}-linux-x64.tar.gz\`
+          - Linux ARM64: \`btoon-${{ env.BTOON_VERSION }}-linux-arm64.tar.gz\`
+          - macOS x64: \`btoon-${{ env.BTOON_VERSION }}-darwin-x64.tar.gz\`
+          - macOS ARM64: \`btoon-${{ env.BTOON_VERSION }}-darwin-arm64.tar.gz\`
+          - Windows x64: \`btoon-${{ env.BTOON_VERSION }}-windows-x64.zip\`
+          - WebAssembly: \`btoon-${{ env.BTOON_VERSION }}-wasm.tar.gz\`
+          
+          ### Checksums
+          - SHA256: \`SHA256SUMS\`
+          - MD5: \`MD5SUMS\`
+          
+          ## Installation
+          
+          ### Linux/macOS
+          \`\`\`bash
+          tar xzf btoon-${{ env.BTOON_VERSION }}-<platform>-<arch>.tar.gz
+          cd btoon-${{ env.BTOON_VERSION }}-<platform>-<arch>
+          sudo cp btoon* /usr/local/bin/
+          sudo cp lib* /usr/local/lib/
+          sudo cp -r include/* /usr/local/include/
+          \`\`\`
+          
+          ### Windows
+          Extract the ZIP file and add the directory to your PATH.
+          
+          ## What's New
+          See [CHANGELOG.md](https://github.com/BTOON-project/btoon-core/blob/main/docs/CHANGELOG.md) for details.
+          EOF
+          
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: BTOON ${{ env.BTOON_VERSION }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: ${{ contains(env.BTOON_VERSION, '-') }}
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+            artifacts/SHA256SUMS
+            artifacts/MD5SUMS
+            
+  # Trigger builds in language binding repositories
+  trigger-bindings:
+    name: Trigger Language Bindings
+    needs: create-release
+    runs-on: ubuntu-20.04
+    strategy:
+      matrix:
+        repo: [btoon-python, btoon-nodejs, btoon-javascript, btoon-php]
+    steps:
+      - name: Trigger ${{ matrix.repo }} build
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.DISPATCH_TOKEN }}
+          repository: BTOON-project/${{ matrix.repo }}
+          event-type: core-release
+          client-payload: '{"version": "${{ env.BTOON_VERSION }}"}'

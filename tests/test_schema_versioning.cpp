@@ -260,7 +260,7 @@ TEST_F(SchemaVersioningTest, SchemaSerialization) {
     ASSERT_NE(schema_map, nullptr);
     
     EXPECT_EQ(std::get<String>(schema_map->at("name")), "user");
-    EXPECT_EQ(std::get<String>(schema_map->at("version")), "1.0.0");
+    EXPECT_EQ(std::get<String>(schema_map->at("version")), "0.0.1");
     
     // Deserialize schema from Value
     Schema deserialized = Schema::fromValue(schema_value);
@@ -302,7 +302,7 @@ TEST_F(SchemaVersioningTest, SchemaRegistry) {
     // Remove specific version
     registry.removeSchema("user", SchemaVersion(1, 0, 0));
     versions = registry.getVersions("user");
-    EXPECT_EQ(versions.size(), 2);
+    EXPECT_EQ(versions.size(), 2u);
     
     // Clear registry
     registry.clear();

@@ -1,0 +1,275 @@
+{
+  "version": "0.0.1",
+  "description": "BTOON Test Vectors for Implementation Validation",
+  "categories": {
+    "basic_types": {
+      "nil": {
+        "value": null,
+        "hex": "c0",
+        "bytes": [192]
+      },
+      "false": {
+        "value": false,
+        "hex": "c2",
+        "bytes": [194]
+      },
+      "true": {
+        "value": true,
+        "hex": "c3",
+        "bytes": [195]
+      }
+    },
+    "integers": {
+      "zero": {
+        "value": 0,
+        "hex": "00",
+        "bytes": [0]
+      },
+      "one": {
+        "value": 1,
+        "hex": "01",
+        "bytes": [1]
+      },
+      "max_positive_fixint": {
+        "value": 127,
+        "hex": "7f",
+        "bytes": [127]
+      },
+      "min_negative_fixint": {
+        "value": -32,
+        "hex": "e0",
+        "bytes": [224]
+      },
+      "negative_one": {
+        "value": -1,
+        "hex": "ff",
+        "bytes": [255]
+      },
+      "uint8_128": {
+        "value": 128,
+        "hex": "cc80",
+        "bytes": [204, 128]
+      },
+      "uint8_255": {
+        "value": 255,
+        "hex": "ccff",
+        "bytes": [204, 255]
+      },
+      "uint16_256": {
+        "value": 256,
+        "hex": "cd0100",
+        "bytes": [205, 1, 0]
+      },
+      "uint16_65535": {
+        "value": 65535,
+        "hex": "cdffff",
+        "bytes": [205, 255, 255]
+      },
+      "uint32_65536": {
+        "value": 65536,
+        "hex": "ce00010000",
+        "bytes": [206, 0, 1, 0, 0]
+      },
+      "int8_negative_33": {
+        "value": -33,
+        "hex": "d0df",
+        "bytes": [208, 223]
+      },
+      "int8_negative_128": {
+        "value": -128,
+        "hex": "d080",
+        "bytes": [208, 128]
+      },
+      "int16_negative_129": {
+        "value": -129,
+        "hex": "d1ff7f",
+        "bytes": [209, 255, 127]
+      },
+      "int32_negative_32769": {
+        "value": -32769,
+        "hex": "d2ffff7fff",
+        "bytes": [210, 255, 255, 127, 255]
+      }
+    },
+    "floats": {
+      "float32_zero": {
+        "value": 0.0,
+        "hex": "ca00000000",
+        "bytes": [202, 0, 0, 0, 0]
+      },
+      "float32_one": {
+        "value": 1.0,
+        "hex": "ca3f800000",
+        "bytes": [202, 63, 128, 0, 0]
+      },
+      "float64_pi": {
+        "value": 3.141592653589793,
+        "hex": "cb400921fb54442d18",
+        "bytes": [203, 64, 9, 33, 251, 84, 68, 45, 24]
+      }
+    },
+    "strings": {
+      "empty": {
+        "value": "",
+        "hex": "a0",
+        "bytes": [160]
+      },
+      "single_char": {
+        "value": "a",
+        "hex": "a161",
+        "bytes": [161, 97]
+      },
+      "fixstr_max": {
+        "value": "abcdefghijklmnopqrstuvwxyz12345",
+        "hex": "bf6162636465666768696a6b6c6d6e6f707172737475767778797a3132333435",
+        "bytes": [191, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 49, 50, 51, 52, 53]
+      },
+      "str8_32": {
+        "value": "abcdefghijklmnopqrstuvwxyz123456",
+        "hex": "d9206162636465666768696a6b6c6d6e6f707172737475767778797a313233343536",
+        "bytes": [217, 32, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 49, 50, 51, 52, 53, 54]
+      },
+      "utf8_emoji": {
+        "value": "Hello 👋 World 🌍",
+        "hex": "b248656c6c6f20f09f918b20576f726c6420f09f8c8d",
+        "bytes": [178, 72, 101, 108, 108, 111, 32, 240, 159, 145, 139, 32, 87, 111, 114, 108, 100, 32, 240, 159, 140, 141]
+      }
+    },
+    "binary": {
+      "empty": {
+        "value": [],
+        "hex": "c400",
+        "bytes": [196, 0]
+      },
+      "single_byte": {
+        "value": [255],
+        "hex": "c401ff",
+        "bytes": [196, 1, 255]
+      },
+      "four_bytes": {
+        "value": [0, 1, 2, 3],
+        "hex": "c40400010203",
+        "bytes": [196, 4, 0, 1, 2, 3]
+      }
+    },
+    "arrays": {
+      "empty": {
+        "value": [],
+        "hex": "90",
+        "bytes": [144]
+      },
+      "single_element": {
+        "value": [1],
+        "hex": "9101",
+        "bytes": [145, 1]
+      },
+      "fixarray_max": {
+        "value": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+        "hex": "9f000102030405060708090a0b0c0d0e",
+        "bytes": [159, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+      },
+      "mixed_types": {
+        "value": [null, true, 42, "hello", [1, 2]],
+        "hex": "95c0c32aa568656c6c6f920102",
+        "bytes": [149, 192, 195, 42, 165, 104, 101, 108, 108, 111, 146, 1, 2]
+      },
+      "nested": {
+        "value": [[1, 2], [3, 4]],
+        "hex": "9292010292303",
+        "bytes": [146, 146, 1, 2, 146, 3, 4]
+      }
+    },
+    "maps": {
+      "empty": {
+        "value": {},
+        "hex": "80",
+        "bytes": [128]
+      },
+      "single_pair": {
+        "value": {"a": 1},
+        "hex": "81a16101",
+        "bytes": [129, 161, 97, 1]
+      },
+      "fixmap_max": {
+        "value": {
+          "0": 0, "1": 1, "2": 2, "3": 3, "4": 4,
+          "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
+          "a": 10, "b": 11, "c": 12, "d": 13, "e": 14
+        },
+        "hex": "8fa13000a13101a13202a13303a13404a13505a13606a13707a13808a13909a1610aa1620ba1630ca1640da1650e",
+        "bytes": [143, 161, 48, 0, 161, 49, 1, 161, 50, 2, 161, 51, 3, 161, 52, 4, 161, 53, 5, 161, 54, 6, 161, 55, 7, 161, 56, 8, 161, 57, 9, 161, 97, 10, 161, 98, 11, 161, 99, 12, 161, 100, 13, 161, 101, 14]
+      },
+      "nested": {
+        "value": {"outer": {"inner": "value"}},
+        "hex": "81a56f7574657281a5696e6e6572a576616c7565",
+        "bytes": [129, 165, 111, 117, 116, 101, 114, 129, 165, 105, 110, 110, 101, 114, 165, 118, 97, 108, 117, 101]
+      },
+      "mixed_types": {
+        "value": {
+          "name": "Alice",
+          "age": 30,
+          "active": true,
+          "scores": [95, 87, 92]
+        },
+        "hex": "84a46e616d65a5416c696365a361676518a66163746976c3a673636f726573935f575c",
+        "bytes": [132, 164, 110, 97, 109, 101, 165, 65, 108, 105, 99, 101, 163, 97, 103, 101, 24, 166, 97, 99, 116, 105, 118, 101, 195, 166, 115, 99, 111, 114, 101, 115, 147, 95, 87, 92]
+      }
+    },
+    "extensions": {
+      "timestamp": {
+        "type": -1,
+        "hex": "d7ff0000016912345678",
+        "description": "Unix timestamp with nanoseconds"
+      },
+      "custom_type": {
+        "type": 42,
+        "hex": "d42a01",
+        "description": "User-defined extension type 42"
+      }
+    },
+    "edge_cases": {
+      "max_depth_simple": {
+        "description": "Deeply nested array (depth 10)",
+        "hex": "919191919191919191c0",
+        "bytes": [145, 145, 145, 145, 145, 145, 145, 145, 145, 145, 192]
+      },
+      "large_string_claim": {
+        "description": "String claiming 100 bytes but truncated",
+        "hex": "d96468656c6c6f",
+        "bytes": [217, 100, 104, 101, 108, 108, 111],
+        "should_fail": true
+      },
+      "invalid_utf8": {
+        "description": "Invalid UTF-8 sequence",
+        "hex": "a2ffff",
+        "bytes": [162, 255, 255],
+        "should_fail": true
+      }
+    }
+  },
+  "round_trip_tests": [
+    {
+      "name": "Complex nested structure",
+      "value": {
+        "users": [
+          {
+            "id": 1,
+            "name": "Alice",
+            "email": "alice@example.com",
+            "tags": ["admin", "active"]
+          },
+          {
+            "id": 2,
+            "name": "Bob",
+            "email": "bob@example.com",
+            "tags": ["user"]
+          }
+        ],
+        "metadata": {
+          "version": "0.0.1",
+          "timestamp": 1234567890
+        }
+      }
+    }
+  ]
+}

@@ -16,6 +16,8 @@ option(BUILD_TESTS "Build tests" ON)
 option(BUILD_BENCHMARKS "Build benchmarks" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_TOOLS "Build CLI tools" ON)
+option(BUILD_PYTHON_BINDINGS "Build Python bindings" OFF)
+option(BUILD_JAVASCRIPT_BINDINGS "Build JavaScript/Node.js bindings" OFF)
 option(ENABLE_SANITIZERS "Enable sanitizers (ASan, MSan, UBSan)" OFF)
 option(ENABLE_FUZZING "Enable fuzzing support" OFF)
 option(BUILD_FUZZ_TESTS "Build fuzz testing targets" OFF)
@@ -266,15 +268,36 @@ if(BUILD_TOOLS)
     add_executable(btoon-schema tools/btoon-schema.cpp)
     target_include_directories(btoon-schema PRIVATE include/third_party)
     target_link_libraries(btoon-schema btoon_core)
-    target_compile_features(btoon-schema PRIVATE cxx_std_17) # For filesystem
+    target_compile_features(btoon-schema PRIVATE cxx_std_20)
     install(TARGETS btoon-schema RUNTIME DESTINATION bin)
     
     # btoon-convert format converter tool
     add_executable(btoon-convert tools/btoon-convert.cpp)
     target_include_directories(btoon-convert PRIVATE include/third_party)
     target_link_libraries(btoon-convert btoon_core)
-    target_compile_features(btoon-convert PRIVATE cxx_std_17) # For filesystem
+    target_compile_features(btoon-convert PRIVATE cxx_std_20)
     install(TARGETS btoon-convert RUNTIME DESTINATION bin)
+endif()
+
+# Language bindings
+if(BUILD_PYTHON_BINDINGS)
+    message(STATUS "Building Python bindings")
+    find_package(pybind11 QUIET)
+    if(pybind11_FOUND)
+        pybind11_add_module(_btoon_native 
+            bindings/python/module.cpp
+            bindings/python/btoon_python.hpp
+        )
+        target_link_libraries(_btoon_native PRIVATE btoon_core)
+        target_compile_features(_btoon_native PRIVATE cxx_std_20)
+    else()
+        message(WARNING "pybind11 not found, Python bindings will not be built")
+    endif()
+endif()
+
+if(BUILD_JAVASCRIPT_BINDINGS)
+    message(STATUS "JavaScript/Node.js bindings should be built using node-gyp")
+    message(STATUS "Run: cd bindings/javascript && npm install")
 endif()
 
 # Fuzzing targets

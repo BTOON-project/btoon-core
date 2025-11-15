@@ -1,28 +1,74 @@
 # BTOON Core
 
-[![Version](https://img.shields.io/badge/version-0.0.1-blue.svg)](https://github.com/yourorg/btoon-core)
+[![Version](https://img.shields.io/badge/version-0.0.1-blue.svg)](docs/CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Specification](https://img.shields.io/badge/spec-v0.0.1-orange.svg)](docs/btoon-spec.md)
 [![C++ Standard](https://img.shields.io/badge/C++-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
 
-**BTOON** (Binary TOON) is a high-performance binary serialization format that extends MessagePack with a custom tabular data optimization. It provides 20-40% size reduction for uniform tabular datasets while maintaining full MessagePack compatibility.
+**BTOON** (Binary Tree Object Notation) is a high-performance binary serialization format that combines the simplicity of JSON with the efficiency of binary encoding. It provides robust type safety, schema support, built-in compression, and comprehensive security features.
 
 **Version**: 0.0.1
 
 ## Features
 
-- **MessagePack Compatible**: Fully compliant with the MessagePack specification.
-- **Tabular Optimization**: Custom extension (type `-1`) for compact tabular data encoding.
-- **High Performance**: 4-7x faster than JSON, comparable to MessagePack.
-- **Optional Compression**: Built-in support for Zlib, LZ4, and Zstd.
-- **Streaming API**: Efficiently encode and decode sequences of objects.
-- **Schema Validation**: Validate data against a user-defined schema.
-- **C-API**: A stable C API for creating language bindings.
-- **Type Safe**: Comprehensive, modern C++20 type system.
-- **Zero-Copy Decoding**: Efficient `std::span` API for minimal allocations.
+### Core Capabilities
+- **MessagePack Compatible**: Fully compliant with the MessagePack specification
+- **Type System**: Comprehensive support for primitives, containers, and custom types
+- **High Performance**: 4-7x faster than JSON with SIMD optimizations
+- **Zero-Copy APIs**: Efficient memory management with minimal allocations
+- **Cross-Platform**: Works on Windows, macOS, Linux, ARM, and WebAssembly
+
+### Advanced Features
+- **Compression**: Built-in support for ZLIB, LZ4, and ZSTD with adaptive selection
+- **Schema Support**: Define, validate, and evolve schemas with versioning
+- **Schema Inference**: Automatically generate schemas from data
+- **Tabular Optimization**: Columnar encoding for homogeneous data (20-40% size reduction)
+- **Extension Types**: Support for custom types with forward compatibility
+- **Streaming API**: Efficiently process large datasets
+
+### Security & Validation
+- **Input Validation**: Comprehensive validation against malformed data
+- **Security Features**: Protection against zip bombs, buffer overflows, and DoS attacks
+- **UTF-8 Validation**: Ensures string encoding correctness
+- **Size Limits**: Configurable limits for depth, size, and complexity
+- **Fuzz Testing**: Continuous testing with libFuzzer and AFL++
+
+### Developer Tools
+- **CLI Tools**: `btoon`, `btoon-schema`, `btoon-convert` utilities
+- **C API**: Stable C interface for language bindings
+- **Rich Documentation**: Specification, guides, and examples
+- **Test Vectors**: Comprehensive test suite for validation
+
+## Documentation
+
+- **[Format Specification](docs/btoon-spec.md)**: Complete technical specification
+- **[Quick Reference](docs/QUICK-REFERENCE.md)**: Handy encoding reference
+- **[Implementation Guide](docs/IMPLEMENTATION-GUIDE.md)**: Guide for implementors
+- **[Architecture & Release Strategy](docs/ARCHITECTURE.md)**: Multi-repo architecture and release process
+- **[API Documentation](docs/api/)**: Generated API docs (Doxygen)
+- **[Changelog](docs/CHANGELOG.md)**: Version history and roadmap
+- **[Contributing](CONTRIBUTING.md)**: How to contribute
+
+## Project Organization
+
+BTOON is organized as a multi-repository project under the [BTOON-project](https://github.com/BTOON-project) organization:
+
+### Core Repository
+- **[btoon-core](https://github.com/BTOON-project/btoon-core)** - Core C++ implementation (this repository)
+
+### Language Bindings
+- **[btoon-python](https://github.com/BTOON-project/btoon-python)** - Python bindings
+- **[btoon-javascript](https://github.com/BTOON-project/btoon-javascript)** - JavaScript library (WebAssembly)
+- **[btoon-nodejs](https://github.com/BTOON-project/btoon-nodejs)** - Node.js native bindings
+- **[btoon-go](https://github.com/BTOON-project/btoon-go)** - Go implementation
+- **[btoon-php](https://github.com/BTOON-project/btoon-php)** - PHP extension
+
+### Documentation
+- **[btoon-web](https://github.com/BTOON-project/btoon-web)** - Project website and documentation
 
 ## Requirements
 
-- **C++20** compatible compiler (GCC 10+, Clang 12+, MSVC 2019+)
+- **C++20** compatible compiler (GCC 10+, Clang 12+, MSVC 2019 v16.8+)
 - **CMake** 3.20 or higher
 - **zlib** (required)
 - **OpenSSL** (required)
@@ -47,10 +93,43 @@ sudo apt-get install build-essential cmake libz-dev libssl-dev liblz4-dev libzst
 
 ## Installation
 
+### Pre-built Binaries
+
+Pre-built binaries are available for each release on the [Releases page](https://github.com/BTOON-project/btoon-core/releases).
+
+#### Download and Install
+
+**Linux/macOS:**
+```bash
+# Download the appropriate binary for your platform
+wget https://github.com/BTOON-project/btoon-core/releases/download/v0.0.1/btoon-0.0.1-linux-x64.tar.gz
+
+# Extract
+tar xzf btoon-0.0.1-linux-x64.tar.gz
+
+# Install (optional)
+cd btoon-0.0.1-linux-x64
+sudo cp btoon* /usr/local/bin/
+sudo cp lib* /usr/local/lib/
+sudo cp -r include/* /usr/local/include/
+```
+
+**Windows:**
+```powershell
+# Download and extract the Windows ZIP
+# Add the extracted directory to your PATH environment variable
+```
+
+**Available Platforms:**
+- Linux x64/ARM64
+- macOS x64/ARM64 (Intel/Apple Silicon)
+- Windows x64
+- WebAssembly
+
 ### Building from Source
 
 ```bash
-git clone https://github.com/yourorg/btoon-core.git
+git clone https://github.com/BTOON-project/btoon-core.git
 cd btoon-core
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release

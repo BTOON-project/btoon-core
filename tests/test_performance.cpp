@@ -146,7 +146,7 @@ TEST_F(PerformanceTest, RoundTrip) {
     Value complex_value = Map{
         {"users", tabular_data},
         {"metadata", Map{
-            {"version", String("1.0.0")},
+            {"version", String("0.0.1")},
             {"timestamp", Int(1234567890)},
             {"large_data", Binary(large_binary)}
         }},

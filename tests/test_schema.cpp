@@ -13,7 +13,7 @@ TEST(SchemaTest, BasicValidation) {
     // Convert to new schema format
     Value schema_def = Map{
         {"name", String("user")},
-        {"version", String("1.0.0")},
+        {"version", String("0.0.1")},
         {"fields", Array{
             Map{
                 {"name", String("name")},

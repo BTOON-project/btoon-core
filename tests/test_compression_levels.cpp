@@ -37,7 +37,7 @@ protected:
             {"metadata", Map{
                 {"created", Int(1234567890)},
                 {"updated", Int(1234567900)},
-                {"version", String("1.0.0")}
+                {"version", String("0.0.1")}
             }}
         };
         
