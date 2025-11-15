@@ -300,145 +300,60 @@ void Encoder::encodeColumnar(const Array& data) {
     }
     std::sort(column_names.begin(), column_names.end());
 
-        std::vector<uint8_t> schema_bytes;
+    std::vector<uint8_t> schema_bytes;
 
-        // version
+    // version
+    schema_bytes.push_back(0); schema_bytes.push_back(0); schema_bytes.push_back(0); schema_bytes.push_back(1);
 
-        schema_bytes.push_back(0); schema_bytes.push_back(0); schema_bytes.push_back(0); schema_bytes.push_back(1);
+    // num_columns
+    uint32_t num_columns_val = htonl(column_names.size());
+    schema_bytes.insert(schema_bytes.end(), reinterpret_cast<uint8_t*>(&num_columns_val), reinterpret_cast<uint8_t*>(&num_columns_val) + 4);
 
-        // num_columns
+    // num_rows
+    uint32_t num_rows_val = htonl(data.size());
+    schema_bytes.insert(schema_bytes.end(), reinterpret_cast<uint8_t*>(&num_rows_val), reinterpret_cast<uint8_t*>(&num_rows_val) + 4);
 
-        uint32_t num_columns_val = column_names.size();
+    for (const auto& name : column_names) {
+        uint32_t name_len = htonl(name.length());
+        schema_bytes.insert(schema_bytes.end(), reinterpret_cast<uint8_t*>(&name_len), reinterpret_cast<uint8_t*>(&name_len) + 4);
+        schema_bytes.insert(schema_bytes.end(), name.begin(), name.end());
+    }
 
-        schema_bytes.push_back(static_cast<uint8_t>((num_columns_val >> 24) & 0xFF));
+    for (const auto& name : column_names) {
+        const auto& val = (*first_row).at(name);
+        std::visit([&](auto&& arg) {
+            using T = std::decay_t<decltype(arg)>;
+            if constexpr (std::is_same_v<T, Nil>) schema_bytes.push_back(0);
+            else if constexpr (std::is_same_v<T, Bool>) schema_bytes.push_back(1);
+            else if constexpr (std::is_same_v<T, Int>) schema_bytes.push_back(2);
+            else if constexpr (std::is_same_v<T, Uint>) schema_bytes.push_back(3);
+            else if constexpr (std::is_same_v<T, Float>) schema_bytes.push_back(4);
+            else if constexpr (std::is_same_v<T, String>) schema_bytes.push_back(5);
+            else schema_bytes.push_back(0); // Default to unknown
+        }, val);
+    }
 
-        schema_bytes.push_back(static_cast<uint8_t>((num_columns_val >> 16) & 0xFF));
-
-        schema_bytes.push_back(static_cast<uint8_t>((num_columns_val >> 8) & 0xFF));
-
-        schema_bytes.push_back(static_cast<uint8_t>(num_columns_val & 0xFF));
-
-        // num_rows
-
-        uint32_t num_rows_val = data.size();
-
-        schema_bytes.push_back(static_cast<uint8_t>((num_rows_val >> 24) & 0xFF));
-
-        schema_bytes.push_back(static_cast<uint8_t>((num_rows_val >> 16) & 0xFF));
-
-        schema_bytes.push_back(static_cast<uint8_t>((num_rows_val >> 8) & 0xFF));
-
-        schema_bytes.push_back(static_cast<uint8_t>(num_rows_val & 0xFF));
-
-    
-
-        for (const auto& name : column_names) {
-
-            uint32_t name_len = name.length();
-
-            schema_bytes.push_back(static_cast<uint8_t>((name_len >> 24) & 0xFF));
-
-            schema_bytes.push_back(static_cast<uint8_t>((name_len >> 16) & 0xFF));
-
-            schema_bytes.push_back(static_cast<uint8_t>((name_len >> 8) & 0xFF));
-
-            schema_bytes.push_back(static_cast<uint8_t>(name_len & 0xFF));
-
-            schema_bytes.insert(schema_bytes.end(), name.begin(), name.end());
-
+    std::vector<uint8_t> columns_data_bytes;
+    for (const auto& name : column_names) {
+        std::vector<uint8_t> column_data;
+        for (const auto& row_value : data) {
+            const auto* row = std::get_if<Map>(&row_value);
+            Encoder temp_encoder(pool_); // Uses the main pool, no security
+            temp_encoder.encode((*row).at(name));
+            auto buf = temp_encoder.getBuffer();
+            column_data.insert(column_data.end(), buf.begin(), buf.end());
         }
 
+        uint32_t column_data_size_val = htonl(column_data.size());
+        columns_data_bytes.insert(columns_data_bytes.end(), reinterpret_cast<uint8_t*>(&column_data_size_val), reinterpret_cast<uint8_t*>(&column_data_size_val) + 4);
+        columns_data_bytes.insert(columns_data_bytes.end(), column_data.begin(), column_data.end());
+    }
     
+    std::vector<uint8_t> combined_bytes;
+    combined_bytes.insert(combined_bytes.end(), schema_bytes.begin(), schema_bytes.end());
+    combined_bytes.insert(combined_bytes.end(), columns_data_bytes.begin(), columns_data_bytes.end());
 
-        for (const auto& name : column_names) {
-
-            const auto& val = (*first_row).at(name);
-
-            std::visit([&](auto&& arg) {
-
-                using T = std::decay_t<decltype(arg)>;
-
-                if constexpr (std::is_same_v<T, Nil>) schema_bytes.push_back(0);
-
-                else if constexpr (std::is_same_v<T, Bool>) schema_bytes.push_back(1);
-
-                else if constexpr (std::is_same_v<T, Int>) schema_bytes.push_back(2);
-
-                else if constexpr (std::is_same_v<T, Uint>) schema_bytes.push_back(3);
-
-                else if constexpr (std::is_same_v<T, Float>) schema_bytes.push_back(4);
-
-                else if constexpr (std::is_same_v<T, String>) schema_bytes.push_back(5);
-
-                else schema_bytes.push_back(0); // Default to unknown
-
-            }, val);
-
-        }
-
-    
-
-        std::vector<uint8_t> columns_data_bytes;
-
-        for (const auto& name : column_names) {
-
-            std::vector<uint8_t> column_data;
-
-            for (const auto& row_value : data) {
-
-                const auto* row = std::get_if<Map>(&row_value);
-
-                Encoder temp_encoder(pool_); // Uses the main pool, no security
-
-                temp_encoder.encode((*row).at(name));
-
-                auto buf = temp_encoder.getBuffer();
-
-                column_data.insert(column_data.end(), buf.begin(), buf.end());
-
-            }
-
-            std::cout << "Encoder: Column '" << name << "' raw data size: " << column_data.size() << std::endl;
-
-            // For debugging: print raw column_data
-
-            std::cout << "Encoder: Column '" << name << "' raw data: ";
-
-            for (uint8_t byte : column_data) {
-
-                std::cout << std::hex << static_cast<int>(byte) << " ";
-
-            }
-
-            std::cout << std::dec << std::endl;
-
-    
-
-            uint32_t column_data_size_val = column_data.size();
-
-            columns_data_bytes.push_back(static_cast<uint8_t>((column_data_size_val >> 24) & 0xFF));
-
-            columns_data_bytes.push_back(static_cast<uint8_t>((column_data_size_val >> 16) & 0xFF));
-
-            columns_data_bytes.push_back(static_cast<uint8_t>((column_data_size_val >> 8) & 0xFF));
-
-            columns_data_bytes.push_back(static_cast<uint8_t>(column_data_size_val & 0xFF));
-
-            columns_data_bytes.insert(columns_data_bytes.end(), column_data.begin(), column_data.end());
-
-        }
-
-        
-
-        std::vector<uint8_t> combined_bytes;
-
-        combined_bytes.insert(combined_bytes.end(), schema_bytes.begin(), schema_bytes.end());
-
-        combined_bytes.insert(combined_bytes.end(), columns_data_bytes.begin(), columns_data_bytes.end());
-
-    
-
-        encodeExtension(-10, combined_bytes);
+    encodeExtension(-10, combined_bytes);
 }
 
 void Encoder::encode(const Value& value) {

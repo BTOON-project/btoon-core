@@ -8,7 +8,6 @@
 namespace btoon {
 
 static void check_overflow(size_t pos, size_t count, size_t buffer_size) {
-    std::cout << "check_overflow: pos=" << pos << ", count=" << count << ", buffer_size=" << buffer_size << std::endl;
     if (pos + count > buffer_size) {
         throw BtoonException("Decoder overflow");
     }
@@ -229,6 +228,8 @@ Value Decoder::decodeExtension(std::span<const uint8_t> buffer, size_t& pos) con
             // --- Schema Section ---
             std::vector<std::string> column_names;
             std::vector<uint8_t> column_types;
+            
+            // Read all column names first
             for (uint32_t i = 0; i < num_columns; ++i) {
                 check_overflow(current_ext_data_pos, 4, len);
                 uint32_t name_len = (static_cast<uint32_t>(buffer[pos + current_ext_data_pos]) << 24) |
@@ -240,7 +241,10 @@ Value Decoder::decodeExtension(std::span<const uint8_t> buffer, size_t& pos) con
                 check_overflow(current_ext_data_pos, name_len, len);
                 column_names.emplace_back(reinterpret_cast<const char*>(&buffer[pos + current_ext_data_pos]), name_len);
                 current_ext_data_pos += name_len;
-
+            }
+            
+            // Then read all column types
+            for (uint32_t i = 0; i < num_columns; ++i) {
                 check_overflow(current_ext_data_pos, 1, len);
                 column_types.push_back(buffer[pos + current_ext_data_pos]);
                 current_ext_data_pos += 1;
@@ -260,31 +264,15 @@ Value Decoder::decodeExtension(std::span<const uint8_t> buffer, size_t& pos) con
                                             (static_cast<uint32_t>(buffer[pos + current_ext_data_pos + 3]));
                 current_ext_data_pos += 4;
 
-                std::cout << "Decoder: Column '" << column_names[i] << "' expected data size: " << column_data_size << std::endl;
-
                 size_t column_data_start_in_ext = current_ext_data_pos;
                 // Create a sub-span for the current column's data to decode from
                 std::span<const uint8_t> column_buffer = buffer.subspan(pos + column_data_start_in_ext, column_data_size);
-                std::cout << "Decoder: Column '" << column_names[i] << "' actual buffer size: " << column_buffer.size() << std::endl;
-                std::cout << "Decoder: Column '" << column_names[i] << "' buffer content: ";
-                for (uint8_t byte : column_buffer) {
-                    std::cout << std::hex << static_cast<int>(byte) << " ";
-                }
-                std::cout << std::dec << std::endl;
 
                 size_t sub_pos = 0;
                 for (uint32_t j = 0; j < num_rows; ++j) {
                     auto& row_map = std::get<Map>(arr[j]);
-                    Value decoded_value;
-                    switch (column_types[i]) {
-                        case 0: decoded_value = decodeNil(sub_pos); break; // Nil
-                        case 1: decoded_value = decodeBool(column_buffer, sub_pos); break; // Bool
-                        case 2: decoded_value = decodeInt(column_buffer, sub_pos); break; // Int
-                        case 3: decoded_value = decodeUint(column_buffer, sub_pos); break; // Uint
-                        case 4: decoded_value = decodeFloat(column_buffer, sub_pos); break; // Float
-                        case 5: decoded_value = decodeString(column_buffer, sub_pos); break; // String
-                        default: decoded_value = decode(column_buffer, sub_pos); break; // Fallback to generic decode for unknown types
-                    }
+                    // Use the generic decode function which handles all encoding formats
+                    Value decoded_value = decode(column_buffer, sub_pos);
                     row_map[column_names[i]] = decoded_value;
                 }
                 current_ext_data_pos += column_data_size; // Advance current_ext_data_pos by the total column data size
