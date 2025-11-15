@@ -393,7 +393,7 @@ include(CPack)
 # Optional CPack customization (if file exists locally)
 # Note: CPackConfig.cmake is gitignored, so this is for local development only
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPackConfig.cmake")
-    include(cmake/CPackConfig.cmake OPTIONAL)
+    include(cmake/CPackConfig.cmake)
 endif()
 
 # Generate config file
