@@ -11,33 +11,39 @@
 //
 // SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
 // SPDX-License-Identifier: MIT
-/**
- * @file stream_encoder.h
- * @brief Header file for the BTOON StreamEncoder class.
- */
-#ifndef BTOON_STREAM_ENCODER_H
-#define BTOON_STREAM_ENCODER_H
 
-#include "btoon.h"
-#include <iostream>
-#include <memory>
+#ifndef BTOON_MEMORY_POOL_H
+#define BTOON_MEMORY_POOL_H
+
+#include <cstddef>
+#include <vector>
 
 namespace btoon {
 
-class StreamEncoderImpl; // Pimpl idiom
-
-class StreamEncoder {
+/**
+ * @brief Memory pool allocator for efficient memory management.
+ */
+class MemoryPool {
 public:
-    StreamEncoder(std::ostream& stream, const EncodeOptions& options = {});
-    ~StreamEncoder();
+    MemoryPool(size_t initial_size = 1024);
+    ~MemoryPool();
 
-    void write(const Value& value);
-    void close();
+    void* allocate(size_t size);
+    void deallocate(void* ptr, size_t size);
 
 private:
-    std::unique_ptr<StreamEncoderImpl> pimpl_;
+    struct Block {
+        Block* next;
+    };
+    
+    void new_block();
+
+    std::vector<void*> blocks_;
+    size_t block_size_;
+    uint8_t* current_pos_;
+    size_t remaining_;
 };
 
 } // namespace btoon
 
-#endif // BTOON_STREAM_ENCODER_H
+#endif // BTOON_MEMORY_POOL_H

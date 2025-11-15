@@ -30,24 +30,25 @@ BTOON uses MessagePack as its base format. All standard MessagePack types are su
 - **Maps**: Fixmap (`0x80-0x8f`), map16 (`0xde`), map32 (`0xdf`)
 - **Extensions**: fixext1 (`0xd4`), fixext2 (`0xd5`), fixext4 (`0xd6`), fixext8 (`0xd7`), fixext16 (`0xd8`), ext8 (`0xc7`), ext16 (`0xc8`), ext32 (`0xc9`)
 
-### Tabular Extension Format (Type -1)
+### Tabular Extension Format (Type -10)
 
-BTOON introduces a custom extension type `-1` (0xff) for tabular data optimization. This format is used when encoding arrays of uniform objects (same keys, primitive values only).
+BTOON introduces a custom extension type `-10` for tabular data optimization. This format is used when encoding arrays of uniform objects (same keys, primitive values only).
 
 #### Format Structure
 
 ```
-[ext header] [type=-1] [schema] [rows]
+[ext header] [type=-10] [schema] [rows]
 ```
 
 #### Extension Header
 
 - Uses MessagePack extension format: `fixext16` (`0xd8`) or `ext8/ext16/ext32`
-- Extension type: `-1` (0xff)
+- Extension type: `-10`
 
 #### Schema Section
 
 ```
+version: uint32 (big-endian)
 num_columns: uint32 (big-endian)
 column_names: [
     length: uint32 (big-endian)

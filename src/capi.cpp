@@ -28,12 +28,22 @@ static btoon_value_t* to_c_value(const btoon::Value& cpp_value) {
         } else if constexpr (std::is_same_v<T, btoon::Float>) {
             c_value->type = BTOON_TYPE_FLOAT;
             c_value->as.f = arg;
-        } else if constexpr (std::is_same_v<T, btoon::String>) {
+        } else if constexpr (std::is_same_v<T, btoon::String> || std::is_same_v<T, btoon::StringView>) {
             c_value->type = BTOON_TYPE_STRING;
-            char* str = new char[arg.length() + 1];
-            std::memcpy(str, arg.c_str(), arg.length() + 1);
+            const char* data = nullptr;
+            size_t len = 0;
+            if constexpr (std::is_same_v<T, btoon::String>) {
+                data = arg.c_str();
+                len = arg.length();
+            } else {
+                data = arg.data();
+                len = arg.length();
+            }
+            char* str = new char[len + 1];
+            std::memcpy(str, data, len);
+            str[len] = '\0';
             c_value->as.s.ptr = str;
-            c_value->as.s.len = arg.length();
+            c_value->as.s.len = len;
         } // ... and so on for other types
     }, cpp_value);
 
@@ -97,7 +107,7 @@ btoon_value_t* btoon_decode(const uint8_t* data, size_t size, const btoon_decode
     try {
         btoon::DecodeOptions cpp_options;
         if (options) {
-            cpp_options.decompress = options->decompress;
+            cpp_options.auto_decompress = options->decompress;
             cpp_options.strict = options->strict;
         }
         

@@ -1,245 +1,316 @@
 #include "btoon/encoder.h"
 #include <algorithm>
 #include <cstring>
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 namespace btoon {
 
-// TODO: Implement memory pool for buffer allocation to reduce dynamic memory overhead
-// TODO: Use SIMD instructions (e.g., SSE/AVX) for bulk encoding of arrays and binary data
 
-std::vector<uint8_t> Encoder::encodeNil() const {
-    std::vector<uint8_t> result = {0xc0};
-    return addSignatureIfEnabled(result);
+
+std::span<const uint8_t> Encoder::getBuffer() {
+    addSignatureIfEnabled();
+    return buffer_;
 }
 
-std::vector<uint8_t> Encoder::encodeBool(bool value) const {
-    std::vector<uint8_t> result = {static_cast<uint8_t>(value ? 0xc3 : 0xc2)};
-    return addSignatureIfEnabled(result);
+void Encoder::encodeNil() {
+    buffer_.push_back(0xc0);
 }
 
-std::vector<uint8_t> Encoder::encodeInt(int64_t value) const {
-    std::vector<uint8_t> buf;
+void Encoder::encodeBool(bool value) {
+    buffer_.push_back(static_cast<uint8_t>(value ? 0xc3 : 0xc2));
+}
+
+void Encoder::encodeInt(int64_t value) {
     if (value >= -32 && value <= 127) {
-        buf = {static_cast<uint8_t>(value)};
+        buffer_.push_back(static_cast<uint8_t>(value));
     } else if (value >= -128 && value <= 127) {
-        buf = {0xd0, static_cast<uint8_t>(value)};
+        buffer_.push_back(0xd0);
+        buffer_.push_back(static_cast<uint8_t>(value));
     } else if (value >= -32768 && value <= 32767) {
-        buf.resize(3);
-        buf[0] = 0xd1;
-        std::memcpy(&buf[1], &value, 2);
-        std::reverse(buf.begin() + 1, buf.end());
+        buffer_.push_back(0xd1);
+        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&value), reinterpret_cast<uint8_t*>(&value) + 2);
     } else if (value >= -2147483648LL && value <= 2147483647LL) {
-        buf.resize(5);
-        buf[0] = 0xd2;
-        std::memcpy(&buf[1], &value, 4);
-        std::reverse(buf.begin() + 1, buf.end());
+        buffer_.push_back(0xd2);
+        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&value), reinterpret_cast<uint8_t*>(&value) + 4);
     } else {
-        buf.resize(9);
-        buf[0] = 0xd3;
-        std::memcpy(&buf[1], &value, 8);
-        std::reverse(buf.begin() + 1, buf.end());
+        buffer_.push_back(0xd3);
+        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&value), reinterpret_cast<uint8_t*>(&value) + 8);
     }
-    return addSignatureIfEnabled(buf);
 }
 
-std::vector<uint8_t> Encoder::encodeUint(uint64_t value) const {
-    std::vector<uint8_t> buf;
+void Encoder::encodeUint(uint64_t value) {
     if (value <= 127) {
-        buf = {static_cast<uint8_t>(value)};
+        buffer_.push_back(static_cast<uint8_t>(value));
     } else if (value <= 255) {
-        buf = {0xcc, static_cast<uint8_t>(value)};
+        buffer_.push_back(0xcc);
+        buffer_.push_back(static_cast<uint8_t>(value));
     } else if (value <= 65535) {
-        buf.resize(3);
-        buf[0] = 0xcd;
-        std::memcpy(&buf[1], &value, 2);
-        std::reverse(buf.begin() + 1, buf.end());
+        buffer_.push_back(0xcd);
+        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&value), reinterpret_cast<uint8_t*>(&value) + 2);
     } else if (value <= 4294967295ULL) {
-        buf.resize(5);
-        buf[0] = 0xce;
-        std::memcpy(&buf[1], &value, 4);
-        std::reverse(buf.begin() + 1, buf.end());
+        buffer_.push_back(0xce);
+        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&value), reinterpret_cast<uint8_t*>(&value) + 4);
     } else {
-        buf.resize(9);
-        buf[0] = 0xcf;
-        std::memcpy(&buf[1], &value, 8);
-        std::reverse(buf.begin() + 1, buf.end());
+        buffer_.push_back(0xcf);
+        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&value), reinterpret_cast<uint8_t*>(&value) + 8);
     }
-    return addSignatureIfEnabled(buf);
 }
 
-std::vector<uint8_t> Encoder::encodeFloat(double value) const {
-    std::vector<uint8_t> buf(9);
-    buf[0] = 0xcb;
-    std::memcpy(&buf[1], &value, 8);
-    std::reverse(buf.begin() + 1, buf.end());
-    return addSignatureIfEnabled(buf);
+void Encoder::encodeFloat(double value) {
+    buffer_.push_back(0xcb);
+    buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&value), reinterpret_cast<uint8_t*>(&value) + 8);
 }
 
-std::vector<uint8_t> Encoder::encodeString(const std::string& value) const {
+void Encoder::encodeString(const std::string& value) {
     size_t len = value.size();
-    std::vector<uint8_t> buf;
     if (len <= 31) {
-        buf.push_back(static_cast<uint8_t>(0xa0 | len));
+        buffer_.push_back(static_cast<uint8_t>(0xa0 | len));
     } else if (len <= 255) {
-        buf.push_back(0xd9);
-        buf.push_back(static_cast<uint8_t>(len));
+        buffer_.push_back(0xd9);
+        buffer_.push_back(static_cast<uint8_t>(len));
     } else if (len <= 65535) {
-        buf.push_back(0xda);
-        buf.push_back(static_cast<uint8_t>(len >> 8));
-        buf.push_back(static_cast<uint8_t>(len));
+        buffer_.push_back(0xda);
+        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 2);
     } else {
-        buf.push_back(0xdb);
-        buf.push_back(static_cast<uint8_t>(len >> 24));
-        buf.push_back(static_cast<uint8_t>(len >> 16));
-        buf.push_back(static_cast<uint8_t>(len >> 8));
-        buf.push_back(static_cast<uint8_t>(len));
+        buffer_.push_back(0xdb);
+        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 4);
     }
-    buf.insert(buf.end(), value.begin(), value.end());
-    // TODO: Optimize string copying with SIMD for large strings
-    return addSignatureIfEnabled(buf);
+    buffer_.insert(buffer_.end(), value.begin(), value.end());
 }
 
-std::vector<uint8_t> Encoder::encodeBinary(const std::vector<uint8_t>& value) const {
+void Encoder::encodeBinary(std::span<const uint8_t> value) {
     size_t len = value.size();
-    std::vector<uint8_t> buf;
     if (len <= 255) {
-        buf.push_back(0xc4);
-        buf.push_back(static_cast<uint8_t>(len));
+        buffer_.push_back(0xc4);
+        buffer_.push_back(static_cast<uint8_t>(len));
     } else if (len <= 65535) {
-        buf.push_back(0xc5);
-        buf.push_back(static_cast<uint8_t>(len >> 8));
-        buf.push_back(static_cast<uint8_t>(len));
+        buffer_.push_back(0xc5);
+        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 2);
     } else {
-        buf.push_back(0xc6);
-        buf.push_back(static_cast<uint8_t>(len >> 24));
-        buf.push_back(static_cast<uint8_t>(len >> 16));
-        buf.push_back(static_cast<uint8_t>(len >> 8));
-        buf.push_back(static_cast<uint8_t>(len));
+        buffer_.push_back(0xc6);
+        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 4);
     }
-    buf.insert(buf.end(), value.begin(), value.end());
-    // TODO: Optimize binary data copying with SIMD for large buffers
-    return addSignatureIfEnabled(buf);
+    buffer_.insert(buffer_.end(), value.begin(), value.end());
 }
 
-std::vector<uint8_t> Encoder::encodeArray(const std::vector<std::vector<uint8_t>>& elements) const {
+void Encoder::encodeArray(const std::vector<std::vector<uint8_t>>& elements) {
     size_t len = elements.size();
-    std::vector<uint8_t> buf;
     if (len <= 15) {
-        buf.push_back(static_cast<uint8_t>(0x90 | len));
+        buffer_.push_back(static_cast<uint8_t>(0x90 | len));
     } else if (len <= 65535) {
-        buf.push_back(0xdc);
-        buf.push_back(static_cast<uint8_t>(len >> 8));
-        buf.push_back(static_cast<uint8_t>(len));
+        buffer_.push_back(0xdc);
+        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 2);
     } else {
-        buf.push_back(0xdd);
-        buf.push_back(static_cast<uint8_t>(len >> 24));
-        buf.push_back(static_cast<uint8_t>(len >> 16));
-        buf.push_back(static_cast<uint8_t>(len >> 8));
-        buf.push_back(static_cast<uint8_t>(len));
+        buffer_.push_back(0xdd);
+        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 4);
     }
     for (const auto& elem : elements) {
-        buf.insert(buf.end(), elem.begin(), elem.end());
+        buffer_.insert(buffer_.end(), elem.begin(), elem.end());
     }
-    // TODO: Optimize array concatenation with pre-allocated buffers from memory pool
-    return addSignatureIfEnabled(buf);
 }
 
-std::vector<uint8_t> Encoder::encodeMap(const std::map<std::string, std::vector<uint8_t>>& pairs) const {
+void Encoder::encodeMap(const std::map<std::string, std::vector<uint8_t>>& pairs) {
     size_t len = pairs.size();
-    std::vector<uint8_t> buf;
     if (len <= 15) {
-        buf.push_back(static_cast<uint8_t>(0x80 | len));
+        buffer_.push_back(static_cast<uint8_t>(0x80 | len));
     } else if (len <= 65535) {
-        buf.push_back(0xde);
-        buf.push_back(static_cast<uint8_t>(len >> 8));
-        buf.push_back(static_cast<uint8_t>(len));
+        buffer_.push_back(0xde);
+        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 2);
     } else {
-        buf.push_back(0xdf);
-        buf.push_back(static_cast<uint8_t>(len >> 24));
-        buf.push_back(static_cast<uint8_t>(len >> 16));
-        buf.push_back(static_cast<uint8_t>(len >> 8));
-        buf.push_back(static_cast<uint8_t>(len));
+        buffer_.push_back(0xdf);
+        buffer_.insert(buffer_.end(), reinterpret_cast<const uint8_t*>(&len), reinterpret_cast<const uint8_t*>(&len) + 4);
     }
     for (const auto& pair : pairs) {
-        auto keyBuf = encodeString(pair.first);
-        buf.insert(buf.end(), keyBuf.begin(), keyBuf.end());
-        buf.insert(buf.end(), pair.second.begin(), pair.second.end());
+        encodeString(pair.first);
+        buffer_.insert(buffer_.end(), pair.second.begin(), pair.second.end());
     }
-    // TODO: Optimize map encoding with pre-allocated buffers and parallel processing for large maps
-    return addSignatureIfEnabled(buf);
 }
 
-std::vector<uint8_t> Encoder::encodeTimestamp(int64_t timestamp) const {
-    std::vector<uint8_t> buf(10);
-    buf[0] = 0xd7; // fixext 8
-    buf[1] = -1;   // Timestamp type
-    uint64_t ts = htonll(timestamp);
-    std::memcpy(&buf[2], &ts, 8);
-    return addSignatureIfEnabled(buf);
+void Encoder::encodeTimestamp(int64_t timestamp) {
+    encodeExtension(-1, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&timestamp), 8));
 }
 
-std::vector<uint8_t> Encoder::encodeDate(int64_t milliseconds) const {
-    return encodeExtension(0, {(uint8_t*)&milliseconds, (uint8_t*)&milliseconds + 8});
+void Encoder::encodeDate(int64_t milliseconds) {
+    encodeExtension(-1, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&milliseconds), 8));
 }
 
-std::vector<uint8_t> Encoder::encodeBigInt(const std::vector<uint8_t>& bytes) const {
-    return encodeExtension(1, bytes);
+void Encoder::encodeDateTime(int64_t nanoseconds) {
+    encodeExtension(-2, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&nanoseconds), 8));
 }
 
-std::vector<uint8_t> Encoder::encodeExtension(int8_t type, const std::vector<uint8_t>& data) const {
+void Encoder::encodeBigInt(std::span<const uint8_t> bytes) {
+    encodeExtension(0, bytes);
+}
+
+void Encoder::encodeVectorFloat(const VectorFloat& value) {
+    encodeExtension(-3, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(value.data.data()), value.data.size() * sizeof(float)));
+}
+
+void Encoder::encodeVectorDouble(const VectorDouble& value) {
+    encodeExtension(-4, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(value.data.data()), value.data.size() * sizeof(double)));
+}
+
+void Encoder::encodeExtension(int8_t type, std::span<const uint8_t> data) {
     size_t len = data.size();
-    std::vector<uint8_t> buf;
-    if (len == 1) {
-        buf.push_back(0xd4);
-    } else if (len == 2) {
-        buf.push_back(0xd5);
-    } else if (len == 4) {
-        buf.push_back(0xd6);
-    } else if (len == 8) {
-        buf.push_back(0xd7);
-    } else if (len == 16) {
-        buf.push_back(0xd8);
-    } else if (len <= 255) {
-        buf.push_back(0xc7);
-        buf.push_back(static_cast<uint8_t>(len));
+    if (len == 1) buffer_.push_back(0xd4);
+    else if (len == 2) buffer_.push_back(0xd5);
+    else if (len == 4) buffer_.push_back(0xd6);
+    else if (len == 8) buffer_.push_back(0xd7);
+    else if (len == 16) buffer_.push_back(0xd8);
+    else if (len <= 255) {
+        buffer_.push_back(0xc7);
+        buffer_.push_back(static_cast<uint8_t>(len));
     } else if (len <= 65535) {
-        buf.push_back(0xc8);
-        buf.push_back(static_cast<uint8_t>(len >> 8));
-        buf.push_back(static_cast<uint8_t>(len));
+        buffer_.push_back(0xc8);
+        uint16_t be_len = htons(static_cast<uint16_t>(len));
+        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&be_len), reinterpret_cast<uint8_t*>(&be_len) + 2);
     } else {
-        buf.push_back(0xc9);
-        buf.push_back(static_cast<uint8_t>(len >> 24));
-        buf.push_back(static_cast<uint8_t>(len >> 16));
-        buf.push_back(static_cast<uint8_t>(len >> 8));
-        buf.push_back(static_cast<uint8_t>(len));
+        buffer_.push_back(0xc9);
+        uint32_t be_len = htonl(static_cast<uint32_t>(len));
+        buffer_.insert(buffer_.end(), reinterpret_cast<uint8_t*>(&be_len), reinterpret_cast<uint8_t*>(&be_len) + 4);
     }
-    buf.push_back(static_cast<uint8_t>(type));
-    buf.insert(buf.end(), data.begin(), data.end());
-    return addSignatureIfEnabled(buf);
+    buffer_.push_back(static_cast<uint8_t>(type));
+    buffer_.insert(buffer_.end(), data.begin(), data.end());
 }
 
-std::vector<uint8_t> Encoder::encodeVarInt(uint64_t value, uint8_t prefix, uint8_t bits) const {
-    std::vector<uint8_t> buf;
-    buf.push_back(prefix);
-    for (int i = bits / 8 - 1; i >= 0; --i) {
-        buf.push_back(static_cast<uint8_t>(value >> (i * 8)));
+void Encoder::encodeColumnar(const Array& data) {
+    if (!is_tabular(data)) {
+        std::vector<std::vector<uint8_t>> elements;
+        for(const auto& v : data) {
+            Encoder temp_encoder;
+            temp_encoder.encode(v);
+            auto buf = temp_encoder.getBuffer();
+            elements.emplace_back(buf.begin(), buf.end());
+        }
+        encodeArray(elements);
+        return;
     }
-    return buf;
+
+    const auto* first_row = std::get_if<Map>(&data[0]);
+    std::vector<std::string> column_names;
+    for (const auto& [key, _] : *first_row) {
+        column_names.push_back(key);
+    }
+    std::sort(column_names.begin(), column_names.end());
+
+    std::vector<uint8_t> schema_bytes;
+    // version
+    schema_bytes.push_back(0); schema_bytes.push_back(0); schema_bytes.push_back(0); schema_bytes.push_back(1);
+    // num_columns
+    uint32_t num_columns = htonl(column_names.size());
+    schema_bytes.insert(schema_bytes.end(), reinterpret_cast<uint8_t*>(&num_columns), reinterpret_cast<uint8_t*>(&num_columns) + 4);
+
+    for (const auto& name : column_names) {
+        uint32_t name_len = htonl(name.length());
+        schema_bytes.insert(schema_bytes.end(), reinterpret_cast<uint8_t*>(&name_len), reinterpret_cast<uint8_t*>(&name_len) + 4);
+        schema_bytes.insert(schema_bytes.end(), name.begin(), name.end());
+    }
+
+    for (const auto& name : column_names) {
+        const auto& val = (*first_row).at(name);
+        std::visit([&](auto&& arg) {
+            using T = std::decay_t<decltype(arg)>;
+            if constexpr (std::is_same_v<T, Nil>) schema_bytes.push_back(0);
+            else if constexpr (std::is_same_v<T, Bool>) schema_bytes.push_back(1);
+            else if constexpr (std::is_same_v<T, Int>) schema_bytes.push_back(2);
+            else if constexpr (std::is_same_v<T, Uint>) schema_bytes.push_back(3);
+            else if constexpr (std::is_same_v<T, Float>) schema_bytes.push_back(4);
+            else if constexpr (std::is_same_v<T, String> || std::is_same_v<T, StringView>) schema_bytes.push_back(5);
+            else schema_bytes.push_back(0); // Default to unknown
+        }, val);
+    }
+
+    std::vector<uint8_t> rows_bytes;
+    uint32_t num_rows = htonl(data.size());
+    rows_bytes.insert(rows_bytes.end(), reinterpret_cast<uint8_t*>(&num_rows), reinterpret_cast<uint8_t*>(&num_rows) + 4);
+
+    for (const auto& row_value : data) {
+        const auto* row = std::get_if<Map>(&row_value);
+        for (const auto& name : column_names) {
+            Encoder temp_encoder;
+            temp_encoder.encode((*row).at(name));
+            auto buf = temp_encoder.getBuffer();
+            rows_bytes.insert(rows_bytes.end(), buf.begin(), buf.end());
+        }
+    }
+    
+    std::vector<uint8_t> combined_bytes;
+    combined_bytes.insert(combined_bytes.end(), schema_bytes.begin(), schema_bytes.end());
+    combined_bytes.insert(combined_bytes.end(), rows_bytes.begin(), rows_bytes.end());
+
+    encodeExtension(-10, combined_bytes);
 }
 
-std::vector<uint8_t> Encoder::addSignatureIfEnabled(const std::vector<uint8_t>& data) const {
+void Encoder::encode(const Value& value) {
+    std::visit([this](auto&& arg) {
+        using T = std::decay_t<decltype(arg)>;
+        if constexpr (std::is_same_v<T, Nil>) encodeNil();
+        else if constexpr (std::is_same_v<T, Bool>) encodeBool(arg);
+        else if constexpr (std::is_same_v<T, Int>) encodeInt(arg);
+        else if constexpr (std::is_same_v<T, Uint>) encodeUint(arg);
+        else if constexpr (std::is_same_v<T, Float>) encodeFloat(arg);
+        else if constexpr (std::is_same_v<T, String>) encodeString(arg);
+        else if constexpr (std::is_same_v<T, StringView>) encodeString({arg.data(), arg.size()});
+        else if constexpr (std::is_same_v<T, Binary>) encodeBinary(arg);
+        else if constexpr (std::is_same_v<T, Extension>) encodeExtension(arg.type, arg.data);
+        else if constexpr (std::is_same_v<T, Timestamp>) encodeTimestamp(arg.seconds);
+        else if constexpr (std::is_same_v<T, Date>) encodeDate(arg.milliseconds);
+        else if constexpr (std::is_same_v<T, DateTime>) encodeDateTime(arg.nanoseconds);
+        else if constexpr (std::is_same_v<T, BigInt>) encodeBigInt(arg.bytes);
+        else if constexpr (std::is_same_v<T, VectorFloat>) encodeVectorFloat(arg);
+        else if constexpr (std::is_same_v<T, VectorDouble>) encodeVectorDouble(arg);
+        else if constexpr (std::is_same_v<T, Array>) {
+            if (is_tabular(arg)) {
+                encodeColumnar(arg);
+            } else {
+                std::vector<std::vector<uint8_t>> elements;
+                for(const auto& v : arg) {
+                    Encoder temp_encoder;
+                    temp_encoder.encode(v);
+                    auto buf = temp_encoder.getBuffer();
+                    elements.emplace_back(buf.begin(), buf.end());
+                }
+                encodeArray(elements);
+            }
+        }
+        else if constexpr (std::is_same_v<T, Map>) {
+            // This is inefficient and will be replaced
+            std::map<std::string, std::vector<uint8_t>> pairs;
+            for(const auto& [k, v] : arg) {
+                Encoder temp_encoder;
+                temp_encoder.encode(v);
+                auto buf = temp_encoder.getBuffer();
+                pairs[k] = {buf.begin(), buf.end()};
+            }
+            encodeMap(pairs);
+        }
+    }, value);
+}
+
+void Encoder::addSignatureIfEnabled() {
     if (useSecurity_ && security_ != nullptr) {
-        // Generate HMAC signature
-        auto signature = security_->sign(data);
-        // Prepend signature to data (signature length + signature + data)
+        auto signature = security_->sign(buffer_);
         std::vector<uint8_t> signedData;
         uint8_t sigLen = static_cast<uint8_t>(signature.size());
         signedData.push_back(sigLen);
         signedData.insert(signedData.end(), signature.begin(), signature.end());
-        signedData.insert(signedData.end(), data.begin(), data.end());
-        return signedData;
+        signedData.insert(signedData.end(), buffer_.begin(), buffer_.end());
+        buffer_ = signedData;
     }
-    return data;
+}
+
+void Encoder::simd_copy(uint8_t* dst, const uint8_t* src, size_t size) const {
+#if defined(__AVX2__)
+    // AVX implementation
+#elif defined(__ARM_NEON)
+    // NEON implementation
+#else
+    std::memcpy(dst, src, size);
+#endif
 }
 
 } // namespace btoon

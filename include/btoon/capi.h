@@ -1,3 +1,18 @@
+//  ██████╗ ████████╗ ██████╗  ██████╗ ███╗   ██╗
+//  ██╔══██╗╚══██╔══╝██╔═══██╗██╔═══██╗████╗  ██║
+//  ██████╔╝   ██║   ██║   ██║██║   ██║██╔██╗ ██║
+//  ██╔══██╗   ██║   ██║   ██║██║   ██║██║╚██╗██║
+//  ██████╔╝   ██║   ╚██████╔╝╚██████╔╝██║ ╚████║
+//  ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝
+//
+//  BTOON Core
+//  Version 0.0.1
+//  https://btoon.net //  https://btoon.net //  https://btoon.net //  https://btoon.net //  https://btoon.net & https://github.com/BTOON-project/btoon-coren// https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core
+//
+// SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
+// SPDX-License-Identifier: MIT
+
+
 /**
  * @file capi.h
  * @brief C API for BTOON - Stable ABI for language bindings

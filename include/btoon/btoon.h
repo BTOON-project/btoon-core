@@ -44,44 +44,114 @@ using Float = double;
 using String = std::string;
 using StringView = std::string_view;
 using Binary = std::vector<uint8_t>;
+using BinaryView = std::span<const uint8_t>;
 using Array = std::vector<Value>;
 using Map = std::map<String, Value>;
 
-/**
- * @brief Represents a MessagePack extension type.
- */
+struct VectorFloat {
+    std::vector<float> data;
+
+    bool operator==(const VectorFloat& other) const {
+        return data == other.data;
+    }
+
+    bool operator<(const VectorFloat& other) const {
+        return std::lexicographical_compare(data.begin(), data.end(), other.data.begin(), other.data.end());
+    }
+};
+
+using VectorFloatView = std::span<const float>;
+
+struct VectorDouble {
+    std::vector<double> data;
+
+    bool operator==(const VectorDouble& other) const {
+        return data == other.data;
+    }
+
+    bool operator<(const VectorDouble& other) const {
+        return std::lexicographical_compare(data.begin(), data.end(), other.data.begin(), other.data.end());
+    }
+};
+
+using VectorDoubleView = std::span<const double>;
+
+inline bool operator==(const BinaryView& lhs, const BinaryView& rhs) {
+    return std::equal(lhs.begin(), lhs.end(), rhs.begin(), rhs.end());
+}
+
+inline bool operator==(const VectorFloatView& lhs, const VectorFloatView& rhs) {
+    return std::equal(lhs.begin(), lhs.end(), rhs.begin(), rhs.end());
+}
+
+inline bool operator==(const VectorDoubleView& lhs, const VectorDoubleView& rhs) {
+    return std::equal(lhs.begin(), lhs.end(), rhs.begin(), rhs.end());
+}
+
 struct Extension {
     int8_t type;
-    std::vector<uint8_t> data;
+    std::span<const uint8_t> data;
+
+    bool operator==(const Extension& other) const {
+        return type == other.type && std::equal(data.begin(), data.end(), other.data.begin(), other.data.end());
+    }
+
+    bool operator<(const Extension& other) const {
+        if (type != other.type) {
+            return type < other.type;
+        }
+        return std::lexicographical_compare(data.begin(), data.end(), other.data.begin(), other.data.end());
+    }
 };
 
-/**
- * @brief Represents a MessagePack timestamp.
- */
 struct Timestamp {
     int64_t seconds;
+
+    bool operator==(const Timestamp& other) const {
+        return seconds == other.seconds;
+    }
+
+    bool operator<(const Timestamp& other) const {
+        return seconds < other.seconds;
+    }
 };
 
-/**
- * @brief Represents a Date.
- */
 struct Date {
     int64_t milliseconds;
+
+    bool operator==(const Date& other) const {
+        return milliseconds == other.milliseconds;
+    }
+
+    bool operator<(const Date& other) const {
+        return milliseconds < other.milliseconds;
+    }
 };
 
-/**
- * @brief Represents a BigInt.
- */
+struct DateTime {
+    int64_t nanoseconds;
+
+    bool operator==(const DateTime& other) const {
+        return nanoseconds == other.nanoseconds;
+    }
+
+    bool operator<(const DateTime& other) const {
+        return nanoseconds < other.nanoseconds;
+    }
+};
+
 struct BigInt {
-    std::vector<uint8_t> bytes;
+    std::span<const uint8_t> bytes;
+
+    bool operator==(const BigInt& other) const {
+        return std::equal(bytes.begin(), bytes.end(), other.bytes.begin(), other.bytes.end());
+    }
+
+    bool operator<(const BigInt& other) const {
+        return std::lexicographical_compare(bytes.begin(), bytes.end(), other.bytes.begin(), other.bytes.end());
+    }
 };
 
-/**
- * @brief A variant type representing any serializable BTOON value.
- *
- * This is the central type used for interacting with the high-level
- * encode and decode functions.
- */
 struct Value : std::variant<
     Nil,
     Bool,
@@ -91,82 +161,72 @@ struct Value : std::variant<
     String,
     StringView,
     Binary,
+    BinaryView,
     Array,
     Map,
     Extension,
     Timestamp,
     Date,
-    BigInt
+    DateTime,
+    BigInt,
+    VectorFloat,
+    VectorFloatView,
+    VectorDouble,
+    VectorDoubleView
 > {
-    // Inherit constructors from std::variant
     using variant::variant;
+    const char* type_name() const;
+
+    bool operator==(const Value& other) const {
+        if (index() != other.index()) {
+            return false;
+        }
+        return std::visit([&](auto&& arg) -> bool {
+            using T = std::decay_t<decltype(arg)>;
+            auto other_arg = std::get_if<T>(&other);
+            if (!other_arg) {
+                return false;
+            }
+            if constexpr (std::is_same_v<T, StringView> || std::is_same_v<T, BinaryView> || std::is_same_v<T, VectorFloatView> || std::is_same_v<T, VectorDoubleView>) {
+                return std::equal(arg.begin(), arg.end(), other_arg->begin(), other_arg->end());
+            } else {
+                return arg == *other_arg;
+            }
+        }, *this);
+    }
 };
 
-/**
- * @brief Options for configuring the encoding process.
- */
 struct EncodeOptions {
     bool compress = false;
+    int compression_level = 0;
+    CompressionAlgorithm compression_algorithm = CompressionAlgorithm::NONE;
     bool auto_tabular = true;
-    CompressionAlgorithm compression_algorithm = CompressionAlgorithm::ZLIB;
-    int compression_level = 0; // 0 lets the library choose a default
-    // std::string hmac_key; // Future security feature
+    // Potentially add security options here in the future
 };
 
-/**
- * @brief Options for configuring the decoding process.
- */
 struct DecodeOptions {
-    bool decompress = false;
-    bool strict = true; // Enforce strict MessagePack compliance
-    // std::string hmac_key; // Future security feature
+    bool auto_decompress = true;
+    bool strict = true;
+    // Potentially add security options here in the future
 };
 
-/**
- * @brief Exception class for BTOON library errors.
- */
-class BtoonException : public std::runtime_error {
-public:
-    explicit BtoonException(const std::string& message) : std::runtime_error(message) {}
-};
+// --- Core Functions ---
 
-/**
- * @brief Encodes a btoon::Value into a binary byte vector.
- *
- * @param value The btoon::Value to encode.
- * @param options Configuration for the encoding process.
- * @return A std::vector<uint8_t> containing the serialized data.
- * @throws BtoonException on encoding failure.
- */
 std::vector<uint8_t> encode(const Value& value, const EncodeOptions& options = {});
-
-/**
- * @brief Decodes a binary byte span into a btoon::Value.
- *
- * @param data A std::span<const uint8_t> pointing to the binary data.
- * @param options Configuration for the decoding process.
- * @return The decoded btoon::Value.
- * @throws BtoonException on decoding failure or data corruption.
- */
 Value decode(std::span<const uint8_t> data, const DecodeOptions& options = {});
 
-/**
- * @brief Checks if a btoon::Array is eligible for tabular optimization.
- *
- * An array is tabular if it's not empty and all its elements are maps
- * with the exact same set of keys.
- *
- * @param arr The btoon::Array to check.
- * @return True if the array is tabular, false otherwise.
- */
-bool is_tabular(const Array& arr);
+// --- Utility Functions ---
 
-/**
- * @brief Returns the version of the BTOON library.
- * @return A const char* to the version string.
- */
+bool is_tabular(const Array& arr);
 const char* version();
+
+// --- Exceptions ---
+
+class BtoonException : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 } // namespace btoon
 
-#endif // BTOON_H
+#endif // BTOON_BTOON_H} // namespace btoon

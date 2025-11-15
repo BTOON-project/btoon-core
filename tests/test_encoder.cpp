@@ -50,7 +50,8 @@ TEST(EncoderTest, EncodeString) {
 }
 
 TEST(EncoderTest, EncodeBinary) {
-    Value v = Binary{0x01, 0x02, 0x03};
+    std::vector<uint8_t> data = {0x01, 0x02, 0x03};
+    Value v = Binary(data);
     auto encoded = encode(v);
     std::vector<uint8_t> expected = {0xc4, 0x03, 0x01, 0x02, 0x03};
     EXPECT_EQ(encoded, expected);
@@ -107,5 +108,9 @@ TEST(EncoderTest, RoundTrip) {
     auto* b_val = std::get_if<Array>(&(*map)["b"]);
     ASSERT_NE(b_val, nullptr);
     ASSERT_EQ(b_val->size(), 2);
-    EXPECT_EQ(std::get<String>((*b_val)[0]), "x");
+    
+    auto& val1 = (*b_val)[0];
+    auto* str = std::get_if<String>(&val1);
+    ASSERT_NE(str, nullptr);
+    EXPECT_EQ(*str, "x");
 }

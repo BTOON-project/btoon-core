@@ -1,55 +1,69 @@
+//  ██████╗ ████████╗ ██████╗  ██████╗ ███╗   ██╗
+//  ██╔══██╗╚══██╔══╝██╔═══██╗██╔═══██╗████╗  ██║
+//  ██████╔╝   ██║   ██║   ██║██║   ██║██╔██╗ ██║
+//  ██╔══██╗   ██║   ██║   ██║██║   ██║██║╚██╗██║
+//  ██████╔╝   ██║   ╚██████╔╝╚██████╔╝██║ ╚████║
+//  ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝
+//
+//  BTOON Core
+//  Version 0.0.1
+//  https://btoon.net //  https://btoon.net //  https://btoon.net //  https://btoon.net //  https://btoon.net & https://github.com/BTOON-project/btoon-coren// https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core
+//
+// SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
+// SPDX-License-Identifier: MIT
+
 /**
  * @file utils.h
  * @brief Utility functions for BTOON: endianness, varint encoding, checksums
  */
 
-#ifndef BTOON_UTILS_H
-#define BTOON_UTILS_H
-
-#include "btoon.h"
-#include <cstdint>
-#include <cstring>
-#include <vector>
-#include <span>
-
-// Platform-specific includes for endianness
-#if defined(_WIN32) || defined(_WIN64)
-    #include <intrin.h>
-#elif defined(__APPLE__)
-    #include <libkern/OSByteOrder.h>
-#elif defined(__linux__) || defined(__unix__)
-    #include <endian.h>
-#endif
-
-namespace btoon {
-namespace utils {
-
-/**
- * @brief Convert host byte order to big-endian (network byte order)
- */
-inline uint16_t hton16(uint16_t value) {
-#if defined(_WIN32) || defined(_WIN64)
-    return _byteswap_ushort(value);
-#elif defined(__APPLE__)
-    return OSSwapInt16(value);
-#elif defined(__linux__) || defined(__unix__)
-    return htobe16(value);
-#else
-    // Fallback: manual byte swap
-    return ((value & 0xFF00) >> 8) | ((value & 0x00FF) << 8);
-#endif
-}
-
-inline uint32_t hton32(uint32_t value) {
-#if defined(_WIN32) || defined(_WIN64)
-    return _byteswap_ulong(value);
-#elif defined(__APPLE__)
-    return OSSwapInt32(value);
-#elif defined(__linux__) || defined(__unix__)
-    return htobe32(value);
-#else
-    // Fallback: manual byte swap
-    return ((value & 0xFF000000) >> 24) |
+ #ifndef BTOON_UTILS_H
+ #define BTOON_UTILS_H
+ 
+ #include "btoon.h"
+ #include <cstdint>
+ #include <cstring>
+ #include <vector>
+ #include <span>
+ 
+ // Platform-specific includes for endianness
+ #if defined(_WIN32) || defined(_WIN64)
+     #include <intrin.h>
+ #elif defined(__APPLE__)
+     #include <libkern/OSByteOrder.h>
+ #elif defined(__linux__) || defined(__unix__)
+     #include <endian.h>
+ #endif
+ 
+ namespace btoon {
+ namespace utils {
+ 
+ /**
+  * @brief Convert host byte order to big-endian (network byte order)
+  */
+ inline uint16_t hton16(uint16_t value) {
+ #if defined(_WIN32) || defined(_WIN64)
+     return _byteswap_ushort(value);
+ #elif defined(__APPLE__)
+     return OSSwapInt16(value);
+ #elif defined(__linux__) || defined(__unix__)
+     return htobe16(value);
+ #else
+     // Fallback: manual byte swap
+     return ((value & 0xFF00) >> 8) | ((value & 0x00FF) << 8);
+ #endif
+ }
+ 
+ inline uint32_t hton32(uint32_t value) {
+ #if defined(_WIN32) || defined(_WIN64)
+     return _byteswap_ulong(value);
+ #elif defined(__APPLE__)
+     return OSSwapInt32(value);
+ #elif defined(__linux__) || defined(__unix__)
+     return htobe32(value);
+ #else
+     // Fallback: manual byte swap
+     return ((value & 0xFF000000) >> 24) |
            ((value & 0x00FF0000) >> 8) |
            ((value & 0x0000FF00) << 8) |
            ((value & 0x000000FF) << 24);

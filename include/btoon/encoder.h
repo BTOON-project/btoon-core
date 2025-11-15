@@ -1,3 +1,17 @@
+//  ██████╗ ████████╗ ██████╗  ██████╗ ███╗   ██╗
+//  ██╔══██╗╚══██╔══╝██╔═══██╗██╔═══██╗████╗  ██║
+//  ██████╔╝   ██║   ██║   ██║██║   ██║██╔██╗ ██║
+//  ██╔══██╗   ██║   ██║   ██║██║   ██║██║╚██╗██║
+//  ██████╔╝   ██║   ╚██████╔╝╚██████╔╝██║ ╚████║
+//  ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝
+//
+//  BTOON Core
+//  Version 0.0.1
+//  https://btoon.net & https://github.com/BTOON-project/btoon-core
+//
+// SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
+// SPDX-License-Identifier: MIT
+
 /**
  * @file encoder.h
  * @brief Header file for the BTOON Encoder class.
@@ -15,6 +29,8 @@
 #include <map>
 
 #include "btoon.h"
+#include "memory_pool.h"
+#include "memory_pool.h"
 #include "security.h"
 
 namespace btoon {
@@ -37,7 +53,7 @@ public:
      * @brief Constructor with security settings for HMAC signing.
      * @param security Reference to a Security object for signing encoded data.
      */
-    explicit Encoder(const Security& security) : security_(&security), useSecurity_(true) {}
+    explicit Encoder(const Security& security) : security_(&security) {}
     
     /**
      * @brief Default destructor for Encoder.
@@ -48,100 +64,109 @@ public:
      * @brief Enables or disables security signing for encoded data.
      * @param enable Boolean to enable (true) or disable (false) security.
      */
-    void setSecurityEnabled(bool enable) { useSecurity_ = enable; }
+    void setSecurityEnabled(bool enable);
+
+    /**
+     * @brief Gets the encoded data from the buffer.
+     * @return A span of the encoded data.
+     */
+    std::span<const uint8_t> getBuffer();
 
     // Encode basic types
     /**
      * @brief Encodes a null value.
-     * @return A vector of bytes representing the encoded null value.
      */
-    std::vector<uint8_t> encodeNil() const;
+    void encodeNil();
     
     /**
      * @brief Encodes a boolean value.
      * @param value The boolean value to encode.
-     * @return A vector of bytes representing the encoded boolean.
      */
-    std::vector<uint8_t> encodeBool(bool value) const;
+    void encodeBool(bool value);
     
     /**
      * @brief Encodes a signed integer value.
      * @param value The 64-bit signed integer to encode.
-     * @return A vector of bytes representing the encoded integer.
      */
-    std::vector<uint8_t> encodeInt(int64_t value) const;
+    void encodeInt(int64_t value);
     
     /**
      * @brief Encodes an unsigned integer value.
      * @param value The 64-bit unsigned integer to encode.
-     * @return A vector of bytes representing the encoded unsigned integer.
      */
-    std::vector<uint8_t> encodeUint(uint64_t value) const;
+    void encodeUint(uint64_t value);
     
     /**
      * @brief Encodes a floating-point value.
      * @param value The double-precision floating-point number to encode.
-     * @return A vector of bytes representing the encoded float.
      */
-    std::vector<uint8_t> encodeFloat(double value) const;
+    void encodeFloat(double value);
     
     /**
      * @brief Encodes a string value.
      * @param value The string to encode.
-     * @return A vector of bytes representing the encoded string.
      */
-    std::vector<uint8_t> encodeString(const std::string& value) const;
+    void encodeString(const std::string& value);
     
     /**
      * @brief Encodes binary data.
      * @param value The vector of bytes to encode as binary data.
-     * @return A vector of bytes representing the encoded binary data.
      */
-    std::vector<uint8_t> encodeBinary(const std::vector<uint8_t>& value) const;
+    void encodeBinary(std::span<const uint8_t> value);
 
     // Encode compound types
     /**
      * @brief Encodes an array of elements.
      * @param elements A vector of encoded elements to be serialized as an array.
-     * @return A vector of bytes representing the encoded array.
      */
-    std::vector<uint8_t> encodeArray(const std::vector<std::vector<uint8_t>>& elements) const;
+    void encodeArray(const std::vector<std::vector<uint8_t>>& elements);
     
     /**
      * @brief Encodes a map of key-value pairs.
      * @param pairs A map of string keys to encoded values to be serialized as a map.
-     * @return A vector of bytes representing the encoded map.
      */
-    std::vector<uint8_t> encodeMap(const std::map<std::string, std::vector<uint8_t>>& pairs) const;
+    void encodeMap(const std::map<std::string, std::vector<uint8_t>>& pairs);
 
     // Encode timestamp
     /**
      * @brief Encodes a timestamp value.
      * @param timestamp A 64-bit integer representing a timestamp.
-     * @return A vector of bytes representing the encoded timestamp.
      */
-    std::vector<uint8_t> encodeTimestamp(int64_t timestamp) const;
+    void encodeTimestamp(int64_t timestamp);
 
     // Custom extension types
-    std::vector<uint8_t> encodeDate(int64_t milliseconds) const;
-    std::vector<uint8_t> encodeBigInt(const std::vector<uint8_t>& bytes) const;
+    void encodeDate(int64_t milliseconds);
+    void encodeDateTime(int64_t nanoseconds);
+    void encodeBigInt(std::span<const uint8_t> bytes);
+    void encodeVectorFloat(const VectorFloat& value);
+    void encodeVectorDouble(const VectorDouble& value);
 
     // Generic extension type
-    std::vector<uint8_t> encodeExtension(int8_t type, const std::vector<uint8_t>& data) const;
+    void encodeExtension(int8_t type, std::span<const uint8_t> data);
+
+    // Columnar encoding
+    void encodeColumnar(const Array& data);
+
+    // Encode a Value
+    void encode(const Value& value);
 
 private:
     // Helper methods for encoding variable-length integers
-    std::vector<uint8_t> encodeVarInt(uint64_t value, uint8_t prefix, uint8_t bits) const;
+    void encodeVarInt(uint64_t value, uint8_t prefix, uint8_t bits);
     
     /**
      * @brief Adds an HMAC signature to the encoded data if security is enabled.
-     * @param data The encoded binary data to sign.
-     * @return A vector of bytes with the signature prepended if security is enabled.
      */
-    std::vector<uint8_t> addSignatureIfEnabled(const std::vector<uint8_t>& data) const;
+    void addSignatureIfEnabled();
+
+    // SIMD-accelerated memory copy
+    void simd_copy(uint8_t* dst, const uint8_t* src, size_t size) const;
 
     const Security* security_ = nullptr; /**< Pointer to Security object for HMAC signing. */
     bool useSecurity_ = false;           /**< Flag to enable/disable security signing. */
+    MemoryPool* pool_;                   /**< Pointer to MemoryPool for allocations. */
+    bool owns_pool_ = false;             /**< Flag to indicate if the Encoder owns the MemoryPool. */
+    std::vector<uint8_t> buffer_;        /**< Buffer for encoded data. */
 };
 
 } // namespace btoon

@@ -1,3 +1,18 @@
+//  ██████╗ ████████╗ ██████╗  ██████╗ ███╗   ██╗
+//  ██╔══██╗╚══██╔══╝██╔═══██╗██╔═══██╗████╗  ██║
+//  ██████╔╝   ██║   ██║   ██║██║   ██║██╔██╗ ██║
+//  ██╔══██╗   ██║   ██║   ██║██║   ██║██║╚██╗██║
+//  ██████╔╝   ██║   ╚██████╔╝╚██████╔╝██║ ╚████║
+//  ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝
+//
+//  BTOON Core
+//  Version 0.0.1
+//  https://btoon.net & https://github.com/BTOON-project/btoon-core
+//
+// SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
+// SPDX-License-Identifier: MIT
+
+
 /**
  * @file decoder.h
  * @brief Header file for the BTOON Decoder class.
@@ -58,23 +73,26 @@ public:
      * @throws BtoonException if the buffer is invalid, decoding fails, or signature verification fails.
      */
     Value decode(std::span<const uint8_t> buffer) const;
+    std::pair<Value, size_t> decode_and_get_pos(std::span<const uint8_t> buffer) const;
 
 private:
     Value decode(std::span<const uint8_t> buffer, size_t& pos) const;
-    
     Nil decodeNil(size_t& pos) const;
     Bool decodeBool(std::span<const uint8_t> buffer, size_t& pos) const;
     Int decodeInt(std::span<const uint8_t> buffer, size_t& pos) const;
     Uint decodeUint(std::span<const uint8_t> buffer, size_t& pos) const;
     Float decodeFloat(std::span<const uint8_t> buffer, size_t& pos) const;
-    StringView decodeString(std::span<const uint8_t> buffer, size_t& pos) const;
+    String decodeString(std::span<const uint8_t> buffer, size_t& pos) const;
     Binary decodeBinary(std::span<const uint8_t> buffer, size_t& pos) const;
     Array decodeArray(std::span<const uint8_t> buffer, size_t& pos) const;
     Map decodeMap(std::span<const uint8_t> buffer, size_t& pos) const;
     Timestamp decodeTimestamp(std::span<const uint8_t> buffer, size_t& pos) const;
     Value decodeExtension(std::span<const uint8_t> buffer, size_t& pos) const;
     Date decodeDate(std::span<const uint8_t> buffer, size_t& pos, size_t len) const;
+    DateTime decodeDateTime(std::span<const uint8_t> buffer, size_t& pos, size_t len) const;
     BigInt decodeBigInt(std::span<const uint8_t> buffer, size_t& pos, size_t len) const;
+    VectorFloat decodeVectorFloat(std::span<const uint8_t> buffer, size_t& pos, size_t len) const;
+    VectorDouble decodeVectorDouble(std::span<const uint8_t> buffer, size_t& pos, size_t len) const;
 
     uint64_t readVarInt(std::span<const uint8_t> buffer, size_t& pos, uint8_t bits) const;
     

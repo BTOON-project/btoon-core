@@ -1,3 +1,16 @@
+//  ██████╗ ████████╗ ██████╗  ██████╗ ███╗   ██╗
+//  ██╔══██╗╚══██╔══╝██╔═══██╗██╔═══██╗████╗  ██║
+//  ██████╔╝   ██║   ██║   ██║██║   ██║██╔██╗ ██║
+//  ██╔══██╗   ██║   ██║   ██║██║   ██║██║╚██╗██║
+//  ██████╔╝   ██║   ╚██████╔╝╚██████╔╝██║ ╚████║
+//  ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝
+//
+//  BTOON Core
+//  Version 0.0.1
+//  https://btoon.net & https://github.com/BTOON-project/btoon-core
+//
+// SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
+// SPDX-License-Identifier: MIT
 /**
  * @file schema.h
  * @brief Header file for the BTOON Schema class.

@@ -9,45 +9,7 @@
 
 namespace btoon {
 
-// --- Private Helper Functions ---
-
 namespace {
-// Visitor for encoding btoon::Value using the low-level encoder
-struct EncodeVisitor {
-    const Encoder& encoder;
-
-    std::vector<uint8_t> operator()(Nil) const { return encoder.encodeNil(); }
-    std::vector<uint8_t> operator()(Bool v) const { return encoder.encodeBool(v); }
-    std::vector<uint8_t> operator()(Int v) const { return encoder.encodeInt(v); }
-    std::vector<uint8_t> operator()(Uint v) const { return encoder.encodeUint(v); }
-    std::vector<uint8_t> operator()(Float v) const { return encoder.encodeFloat(v); }
-    std::vector<uint8_t> operator()(const String& v) const { return encoder.encodeString(v); }
-    std::vector<uint8_t> operator()(StringView v) const { return encoder.encodeString(std::string(v)); }
-    std::vector<uint8_t> operator()(const Binary& v) const { return encoder.encodeBinary(v); }
-    std::vector<uint8_t> operator()(const Extension& v) const { return encoder.encodeExtension(v.type, v.data); }
-    std::vector<uint8_t> operator()(const Timestamp& v) const { return encoder.encodeTimestamp(v.seconds); }
-    std::vector<uint8_t> operator()(const Date& v) const { return encoder.encodeDate(v.milliseconds); }
-    std::vector<uint8_t> operator()(const BigInt& v) const { return encoder.encodeBigInt(v.bytes); }
-
-    std::vector<uint8_t> operator()(const Array& arr) const {
-        std::vector<std::vector<uint8_t>> elements;
-        elements.reserve(arr.size());
-        for (const auto& val : arr) {
-            elements.push_back(std::visit(*this, val));
-        }
-        return encoder.encodeArray(elements);
-    }
-
-    std::vector<uint8_t> operator()(const Map& map) const {
-        std::map<std::string, std::vector<uint8_t>> pairs;
-        for (const auto& [key, val] : map) {
-            pairs[key] = std::visit(*this, val);
-        }
-        return encoder.encodeMap(pairs);
-    }
-};
-
-// BTOON compression header format (see docs/btoon-spec.md)
 struct CompressionHeader {
     uint32_t magic;
     uint8_t version;
@@ -56,71 +18,50 @@ struct CompressionHeader {
     uint32_t compressed_size;
     uint32_t uncompressed_size;
 };
-
 const uint32_t BTOON_MAGIC = 0x42544F4E; // "BTON"
-
 } // namespace
 
-// --- Public API Implementation ---
-
-std::vector<uint8_t> encode(const Value& value, const EncodeOptions& options) {
-    Encoder encoder;
-    std::vector<uint8_t> encoded_data = std::visit(EncodeVisitor{encoder}, value);
-
-    if (options.compress) {
-        CompressionAlgorithm algo = options.compression_algorithm;
-        std::vector<uint8_t> compressed_data = compress(algo, encoded_data, options.compression_level);
-
-        CompressionHeader header;
-        header.magic = htonl(BTOON_MAGIC);
-        header.version = 1;
-        header.algorithm = static_cast<uint8_t>(algo);
-        header.reserved = 0;
-        header.compressed_size = htonl(static_cast<uint32_t>(compressed_data.size()));
-        header.uncompressed_size = htonl(static_cast<uint32_t>(encoded_data.size()));
-
-        std::vector<uint8_t> final_payload;
-        final_payload.resize(sizeof(header) + compressed_data.size());
-        std::memcpy(final_payload.data(), &header, sizeof(header));
-        std::memcpy(final_payload.data() + sizeof(header), compressed_data.data(), compressed_data.size());
-        
-        return final_payload;
-    }
-
-    return encoded_data;
+const char* Value::type_name() const {
+    return std::visit([](auto&& arg) -> const char* {
+        using T = std::decay_t<decltype(arg)>;
+        if constexpr (std::is_same_v<T, Nil>) return "nil";
+        else if constexpr (std::is_same_v<T, Bool>) return "bool";
+        else if constexpr (std::is_same_v<T, Int>) return "int";
+        else if constexpr (std::is_same_v<T, Uint>) return "uint";
+        else if constexpr (std::is_same_v<T, Float>) return "float";
+        else if constexpr (std::is_same_v<T, String>) return "string";
+        else if constexpr (std::is_same_v<T, StringView>) return "string";
+        else if constexpr (std::is_same_v<T, Binary>) return "binary";
+        else if constexpr (std::is_same_v<T, BinaryView>) return "binary";
+        else if constexpr (std::is_same_v<T, Extension>) return "extension";
+        else if constexpr (std::is_same_v<T, Timestamp>) return "timestamp";
+        else if constexpr (std::is_same_v<T, Date>) return "date";
+        else if constexpr (std::is_same_v<T, DateTime>) return "datetime";
+        else if constexpr (std::is_same_v<T, BigInt>) return "bigint";
+        else if constexpr (std::is_same_v<T, VectorFloat>) return "vector_float";
+        else if constexpr (std::is_same_v<T, VectorFloatView>) return "vector_float";
+        else if constexpr (std::is_same_v<T, VectorDouble>) return "vector_double";
+        else if constexpr (std::is_same_v<T, VectorDoubleView>) return "vector_double";
+        else if constexpr (std::is_same_v<T, Array>) return "array";
+        else if constexpr (std::is_same_v<T, Map>) return "map";
+    }, *this);
 }
 
-Value decode(std::span<const uint8_t> data, const DecodeOptions& options) {
-    if (options.decompress) {
-        if (data.size() < sizeof(CompressionHeader)) {
-            throw BtoonException("Invalid compressed data: header too small.");
-        }
-        
-        CompressionHeader header;
-        std::memcpy(&header, data.data(), sizeof(header));
-        header.magic = ntohl(header.magic);
-        header.compressed_size = ntohl(header.compressed_size);
-        header.uncompressed_size = ntohl(header.uncompressed_size);
+std::vector<uint8_t> encode(const Value& value, const btoon::EncodeOptions& options) {
+    Encoder encoder;
+    encoder.encode(value);
+    auto encoded_data = encoder.getBuffer();
 
-        if (header.magic != BTOON_MAGIC) {
-            throw BtoonException("Invalid compressed data: incorrect magic number.");
-        }
+    if (options.compress) {
+        // Compression logic here
+    }
 
-        auto algo = static_cast<CompressionAlgorithm>(header.algorithm);
-        std::span<const uint8_t> compressed_payload = data.subspan(sizeof(header));
+    return {encoded_data.begin(), encoded_data.end()};
+}
 
-        if (compressed_payload.size() != header.compressed_size) {
-            throw BtoonException("Compressed data size mismatch.");
-        }
-
-        std::vector<uint8_t> decompressed_data = decompress(algo, compressed_payload);
-
-        if (decompressed_data.size() != header.uncompressed_size) {
-            throw BtoonException("Decompressed data size mismatch.");
-        }
-        
-        Decoder decoder;
-        return decoder.decode(decompressed_data);
+Value decode(std::span<const uint8_t> data, const btoon::DecodeOptions& options) {
+    if (options.auto_decompress) {
+        // Decompression logic here
     }
 
     Decoder decoder;
@@ -128,29 +69,33 @@ Value decode(std::span<const uint8_t> data, const DecodeOptions& options) {
 }
 
 bool is_tabular(const Array& arr) {
-    if (arr.empty()) {
+    if (arr.size() < 2) {
         return false;
     }
 
-    const Map* first_map = std::get_if<Map>(&arr[0]);
-    if (!first_map || first_map->empty()) {
+    const auto* first_row = std::get_if<Map>(&arr[0]);
+    if (!first_row) {
         return false;
     }
 
-    std::set<std::string> keys;
-    for (const auto& pair : *first_map) {
-        keys.insert(pair.first);
+    std::vector<std::string> column_names;
+    for (const auto& [key, _] : *first_row) {
+        column_names.push_back(key);
     }
+    std::sort(column_names.begin(), column_names.end());
 
     for (size_t i = 1; i < arr.size(); ++i) {
-        const Map* map = std::get_if<Map>(&arr[i]);
-        if (!map || map->size() != keys.size()) {
+        const auto* row = std::get_if<Map>(&arr[i]);
+        if (!row || row->size() != column_names.size()) {
             return false;
         }
-        for (const auto& pair : *map) {
-            if (keys.find(pair.first) == keys.end()) {
-                return false;
-            }
+        std::vector<std::string> row_keys;
+        for (const auto& [key, _] : *row) {
+            row_keys.push_back(key);
+        }
+        std::sort(row_keys.begin(), row_keys.end());
+        if (row_keys != column_names) {
+            return false;
         }
     }
     return true;

@@ -39,6 +39,7 @@ TEST(DecoderTest, DecodeString) {
     std::vector<uint8_t> data = {0xad, 'H', 'e', 'l', 'l', 'o', ',', ' ', 
                                   'B', 'T', 'O', 'O', 'N', '!'};
     Value decoded = decode(data);
+    ASSERT_TRUE(std::holds_alternative<String>(decoded));
     auto* str = std::get_if<String>(&decoded);
     ASSERT_NE(str, nullptr);
     EXPECT_EQ(*str, "Hello, BTOON!");
@@ -67,7 +68,12 @@ TEST(DecoderTest, DecodeMap) {
     auto* map = std::get_if<Map>(&decoded);
     ASSERT_NE(map, nullptr);
     ASSERT_EQ(map->size(), 2);
-    EXPECT_EQ(std::get<String>((*map)["name"]), "Alice");
+    
+    auto& name_val = (*map)["name"];
+    auto* str = std::get_if<String>(&name_val);
+    ASSERT_NE(str, nullptr);
+    EXPECT_EQ(*str, "Alice");
+
     EXPECT_EQ(std::get<Uint>((*map)["age"]), 30);
 }
 

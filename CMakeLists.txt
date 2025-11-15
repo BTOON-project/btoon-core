@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
+cmake_policy(VERSION 3.20)
 project(btoon VERSION 0.0.1 LANGUAGES CXX)
 
 # Include CMake modules
@@ -12,7 +13,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Build options
 option(BUILD_SHARED_LIBS "Build shared library" OFF)
 option(BUILD_TESTS "Build tests" ON)
-option(BUILD_BENCHMARKS "Build benchmarks" OFF)
+option(BUILD_BENCHMARKS "Build benchmarks" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_TOOLS "Build CLI tools" OFF)
 option(ENABLE_SANITIZERS "Enable sanitizers (ASan, MSan, UBSan)" OFF)
@@ -107,6 +108,10 @@ set(BTOON_SOURCES
     src/stream_encoder.cpp
     src/stream_decoder.cpp
     src/schema.cpp
+    src/memory_pool.cpp
+    src/delta_codec.cpp
+    src/rle_codec.cpp
+    src/dictionary_codec.cpp
 )
 
 set(BTOON_HEADERS
@@ -192,7 +197,9 @@ if(BUILD_TESTS)
     # Unit tests
     add_executable(btoon_tests
         tests/test_encoder.cpp
+        tests/test_encoder_tabular.cpp
         tests/test_decoder.cpp
+        tests/test_decoder_tabular.cpp
         tests/test_security.cpp
         tests/test_capi.cpp
         tests/test_streaming.cpp
@@ -209,19 +216,15 @@ if(BUILD_TESTS)
     gtest_discover_tests(btoon_tests)
     
     # Fuzz targets (if enabled)
-    if(ENABLE_FUZZING)
-        execute_process(COMMAND find / -name "libclang_rt.fuzzer_osx.a" 2>/dev/null OUTPUT_VARIABLE FUZZER_LIB OUTPUT_STRIP_TRAILING_WHITESPACE)
-        if(FUZZER_LIB)
-            message(STATUS "Found Fuzzer library: ${FUZZER_LIB}")
-        else()
-            message(FATAL_ERROR "Fuzzer library not found. Please ensure Clang with libFuzzer is installed.")
-        endif()
-        add_executable(btoon_fuzz_decoder tests/fuzz_decoder.cpp)
-        target_link_libraries(btoon_fuzz_decoder btoon_core ${FUZZER_LIB})
-        set_target_properties(btoon_fuzz_decoder PROPERTIES
-            CXX_STANDARD 20
-        )
-    endif()
+    # TODO: Re-enable when linker issue is resolved
+    # if(ENABLE_FUZZING)
+    #     add_executable(btoon_fuzz_decoder tests/fuzz_decoder.cpp)
+    #     target_compile_options(btoon_fuzz_decoder PRIVATE -fsanitize=fuzzer)
+    #     target_link_libraries(btoon_fuzz_decoder PRIVATE btoon_core -fsanitize=fuzzer)
+    #     set_target_properties(btoon_fuzz_decoder PROPERTIES
+    #         CXX_STANDARD 20
+    #     )
+    # endif()
 endif()
 # Benchmarks
 if(BUILD_BENCHMARKS)
@@ -239,7 +242,7 @@ if(BUILD_BENCHMARKS)
     add_executable(btoon_benchmark tests/benchmark.cpp)
     target_link_libraries(btoon_benchmark
         PRIVATE
-            btoon
+            btoon_core
             benchmark::benchmark
             benchmark::benchmark_main
     )
