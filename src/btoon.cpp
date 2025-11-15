@@ -94,7 +94,7 @@ std::vector<uint8_t> encode(const Value& value, const btoon::EncodeOptions& opti
         }
         
         // Only use compressed if it's actually smaller
-        if (compressed.size() < result.size() * 0.95) { // 5% threshold
+        if (compressed.size() < static_cast<size_t>(result.size() * 0.95)) { // 5% threshold
             // Add compression header
             CompressionHeader header;
             header.magic = htonl(BTOON_MAGIC);

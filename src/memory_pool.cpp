@@ -29,7 +29,7 @@ static void* aligned_alloc_compat(size_t alignment, size_t size) {
 #endif
 }
 
-static void aligned_free_compat(void* ptr) {
+static void aligned_free_compat(void* ptr) noexcept {
 #if defined(_WIN32)
     _aligned_free(ptr);
 #elif defined(__APPLE__) || defined(__linux__)
@@ -52,9 +52,9 @@ MemoryPool::Block::Block(size_t sz)
 }
 
 MemoryPool::MemoryPool(size_t initial_size)
-    : block_size_(initial_size),
-      current_pos_(nullptr),
+    : current_pos_(nullptr),
       remaining_(0),
+      block_size_(initial_size),
       total_allocated_(0),
       current_usage_(0) {
     new_block(initial_size);
