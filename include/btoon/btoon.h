@@ -173,9 +173,19 @@ using Map = std::map<String, Value>;
 
 struct EncodeOptions {
     bool compress = false;
-    int compression_level = 0;
+    int compression_level = 0;  // Numeric level for backward compatibility
     CompressionAlgorithm compression_algorithm = CompressionAlgorithm::NONE;
     bool auto_tabular = true;
+    
+    // New compression level system
+    CompressionLevel compression_preset = CompressionLevel::DEFAULT;
+    CompressionProfile compression_profile;  // Optional: use profile instead
+    bool use_profile = false;  // If true, use compression_profile instead of algorithm/level
+    
+    // Adaptive compression
+    bool adaptive_compression = false;  // Auto-select best algorithm based on data
+    size_t min_compression_size = 256;  // Minimum size to compress
+    
     // Potentially add security options here in the future
 };
 

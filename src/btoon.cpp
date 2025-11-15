@@ -5,6 +5,7 @@
 #include <set>
 #include <vector>
 #include <stdexcept>
+#include <cstring>
 #include <arpa/inet.h>
 
 namespace btoon {
@@ -46,23 +47,132 @@ const char* Value::type_name() const {
 
 std::vector<uint8_t> encode(const Value& value, const btoon::EncodeOptions& options) {
     Encoder encoder;
+    encoder.setOptions(options);
     encoder.encode(value);
     auto encoded_data = encoder.getBuffer();
+    std::vector<uint8_t> result(encoded_data.begin(), encoded_data.end());
 
     if (options.compress) {
-        // Compression logic here
+        // Skip compression for small data
+        if (result.size() < options.min_compression_size) {
+            return result;
+        }
+        
+        std::vector<uint8_t> compressed;
+        
+        if (options.use_profile) {
+            // Use compression profile
+            compressed = compress(options.compression_profile, result);
+        } else if (options.adaptive_compression) {
+            // Auto-select best algorithm
+            CompressionAlgorithm algo = select_best_algorithm(result, 
+                options.compression_level <= 2 || options.compression_preset == CompressionLevel::FAST);
+            
+            if (algo != CompressionAlgorithm::NONE) {
+                int level = options.compression_level;
+                if (level == 0 && options.compression_preset != CompressionLevel::CUSTOM) {
+                    level = get_numeric_level(algo, options.compression_preset);
+                }
+                compressed = compress(algo, result, level);
+            } else {
+                return result; // No compression beneficial
+            }
+        } else {
+            // Use specified algorithm and level
+            CompressionAlgorithm algo = options.compression_algorithm;
+            if (algo == CompressionAlgorithm::NONE) {
+                return result;
+            }
+            
+            int level = options.compression_level;
+            if (level == 0 && options.compression_preset != CompressionLevel::CUSTOM) {
+                level = get_numeric_level(algo, options.compression_preset);
+            }
+            
+            compressed = compress(algo, result, level);
+        }
+        
+        // Only use compressed if it's actually smaller
+        if (compressed.size() < result.size() * 0.95) { // 5% threshold
+            // Add compression header
+            CompressionHeader header;
+            header.magic = htonl(BTOON_MAGIC);
+            header.version = 1;
+            
+            // Store the actual algorithm used (not the original which might be AUTO)
+            if (options.adaptive_compression) {
+                CompressionAlgorithm actual_algo = select_best_algorithm(result, 
+                    options.compression_level <= 2 || options.compression_preset == CompressionLevel::FAST);
+                header.algorithm = static_cast<uint8_t>(actual_algo);
+            } else if (options.use_profile && options.compression_profile.algorithm == CompressionAlgorithm::AUTO) {
+                CompressionAlgorithm actual_algo = select_best_algorithm(result, options.compression_profile.numeric_level <= 3);
+                header.algorithm = static_cast<uint8_t>(actual_algo);
+            } else if (options.use_profile) {
+                header.algorithm = static_cast<uint8_t>(options.compression_profile.algorithm);
+            } else {
+                header.algorithm = static_cast<uint8_t>(options.compression_algorithm);
+            }
+            
+            header.reserved = 0;
+            header.compressed_size = htonl(compressed.size());
+            header.uncompressed_size = htonl(result.size());
+            
+            std::vector<uint8_t> final_result;
+            final_result.reserve(sizeof(header) + compressed.size());
+            final_result.insert(final_result.end(), 
+                reinterpret_cast<uint8_t*>(&header),
+                reinterpret_cast<uint8_t*>(&header) + sizeof(header));
+            final_result.insert(final_result.end(), compressed.begin(), compressed.end());
+            
+            return final_result;
+        }
     }
 
-    return {encoded_data.begin(), encoded_data.end()};
+    return result;
 }
 
 Value decode(std::span<const uint8_t> data, const btoon::DecodeOptions& options) {
-    if (options.auto_decompress) {
-        // Decompression logic here
+    std::span<const uint8_t> actual_data = data;
+    std::vector<uint8_t> decompressed;
+    
+    if (options.auto_decompress && data.size() >= sizeof(CompressionHeader)) {
+        // Check for compression header
+        CompressionHeader header;
+        std::memcpy(&header, data.data(), sizeof(header));
+        header.magic = ntohl(header.magic);
+        
+        if (header.magic == BTOON_MAGIC) {
+            header.compressed_size = ntohl(header.compressed_size);
+            header.uncompressed_size = ntohl(header.uncompressed_size);
+            
+            // Validate header
+            if (header.version == 1 && 
+                header.compressed_size + sizeof(header) <= data.size()) {
+                
+                auto compressed_data = data.subspan(sizeof(header), header.compressed_size);
+                CompressionAlgorithm algo = static_cast<CompressionAlgorithm>(header.algorithm);
+                
+                try {
+                    decompressed = decompress(algo, compressed_data);
+                    
+                    // Validate decompressed size
+                    if (decompressed.size() != header.uncompressed_size) {
+                        throw BtoonException("Decompressed size mismatch");
+                    }
+                    
+                    actual_data = decompressed;
+                } catch (const std::exception& e) {
+                    if (options.strict) {
+                        throw;
+                    }
+                    // Fall back to treating as uncompressed if not strict
+                }
+            }
+        }
     }
 
     Decoder decoder;
-    return decoder.decode(data);
+    return decoder.decode(actual_data);
 }
 
 bool is_tabular(const Array& arr) {

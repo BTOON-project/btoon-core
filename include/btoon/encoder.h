@@ -162,6 +162,7 @@ public:
 
     // Encode a Value
     void encode(const Value& value);
+    void setOptions(const EncodeOptions& opts) { options_ = opts; }
 
 private:
     // Helper methods for encoding variable-length integers

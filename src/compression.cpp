@@ -5,28 +5,251 @@
 
 #ifdef BTOON_WITH_LZ4
 #include <lz4.h>
+#include <lz4hc.h>
 #endif
 
 #ifdef BTOON_WITH_ZSTD
 #include <zstd.h>
 #endif
 
+#include <algorithm>
+#include <cstring>
+
 namespace btoon {
+
+// --- Compression Profile Implementations ---
+
+CompressionProfile CompressionProfile::realtime() {
+    // For real-time applications: prioritize speed
+#ifdef BTOON_WITH_LZ4
+    return CompressionProfile(CompressionAlgorithm::LZ4, 1, 128, true);
+#else
+    return CompressionProfile(CompressionAlgorithm::ZLIB, 1, 128, true);
+#endif
+}
+
+CompressionProfile CompressionProfile::network() {
+    // For network transmission: balance speed and size
+#ifdef BTOON_WITH_ZSTD
+    return CompressionProfile(CompressionAlgorithm::ZSTD, 3, 256, true);
+#else
+    return CompressionProfile(CompressionAlgorithm::ZLIB, 6, 256, true);
+#endif
+}
+
+CompressionProfile CompressionProfile::storage() {
+    // For storage: prioritize compression ratio
+#ifdef BTOON_WITH_ZSTD
+    return CompressionProfile(CompressionAlgorithm::ZSTD, 9, 64, false);
+#else
+    return CompressionProfile(CompressionAlgorithm::ZLIB, 9, 64, false);
+#endif
+}
+
+CompressionProfile CompressionProfile::streaming() {
+    // For streaming: low latency with decent compression
+#ifdef BTOON_WITH_LZ4
+    return CompressionProfile(CompressionAlgorithm::LZ4, 0, 512, true);
+#elif defined(BTOON_WITH_ZSTD)
+    return CompressionProfile(CompressionAlgorithm::ZSTD, 1, 512, true);
+#else
+    return CompressionProfile(CompressionAlgorithm::ZLIB, 3, 512, true);
+#endif
+}
+
+// --- Helper Functions ---
+
+int get_numeric_level(CompressionAlgorithm algo, CompressionLevel level) {
+    if (level == CompressionLevel::CUSTOM) {
+        return 0; // Will use default
+    }
+    
+    switch (algo) {
+        case CompressionAlgorithm::ZLIB:
+            switch (level) {
+                case CompressionLevel::FASTEST: return 1;
+                case CompressionLevel::FAST: return 3;
+                case CompressionLevel::BALANCED: return 6;
+                case CompressionLevel::HIGH: return 7;
+                case CompressionLevel::MAXIMUM: return 9;
+                default: return 6;
+            }
+            
+        case CompressionAlgorithm::LZ4:
+            switch (level) {
+                case CompressionLevel::FASTEST: return 0;  // LZ4 fast
+                case CompressionLevel::FAST: return 1;     // LZ4 default
+                case CompressionLevel::BALANCED: return 4; // LZ4HC level 4
+                case CompressionLevel::HIGH: return 9;     // LZ4HC level 9
+                case CompressionLevel::MAXIMUM: return 12; // LZ4HC level 12
+                default: return 1;
+            }
+            
+#ifdef BTOON_WITH_ZSTD
+        case CompressionAlgorithm::ZSTD:
+            switch (level) {
+                case CompressionLevel::FASTEST: return 1;
+                case CompressionLevel::FAST: return 3;
+                case CompressionLevel::BALANCED: return 5;
+                case CompressionLevel::HIGH: return 9;
+                case CompressionLevel::MAXIMUM: return 19; // ZSTD can go up to 22
+                default: return 3;
+            }
+#endif
+            
+        default:
+            return 0;
+    }
+}
+
+CompressionAlgorithm select_best_algorithm(std::span<const uint8_t> data, bool prefer_speed) {
+    // Simple heuristic-based selection
+    size_t size = data.size();
+    
+    // For very small data, prefer no compression
+    if (size < 128) {
+        return CompressionAlgorithm::NONE;
+    }
+    
+    // Check data entropy (simple check for compressibility)
+    bool highly_compressible = false;
+    if (size >= 256) {
+        // Sample first 256 bytes for patterns
+        std::array<int, 256> freq = {0};
+        size_t sample_size = std::min(size_t(1024), size);
+        for (size_t i = 0; i < sample_size; ++i) {
+            freq[data[i]]++;
+        }
+        
+        // Count unique bytes
+        int unique_bytes = 0;
+        for (int f : freq) {
+            if (f > 0) unique_bytes++;
+        }
+        
+        // If less than 50% unique bytes, data is likely highly compressible
+        highly_compressible = (unique_bytes < 128);
+    }
+    
+    if (prefer_speed) {
+#ifdef BTOON_WITH_LZ4
+        return CompressionAlgorithm::LZ4;
+#elif defined(BTOON_WITH_ZSTD)
+        return CompressionAlgorithm::ZSTD;
+#else
+        return CompressionAlgorithm::ZLIB;
+#endif
+    }
+    
+    if (highly_compressible) {
+#ifdef BTOON_WITH_ZSTD
+        return CompressionAlgorithm::ZSTD;
+#else
+        return CompressionAlgorithm::ZLIB;
+#endif
+    }
+    
+    // For moderately compressible data
+#ifdef BTOON_WITH_LZ4
+    if (size < 65536) {
+        return CompressionAlgorithm::LZ4;
+    }
+#endif
+    
+#ifdef BTOON_WITH_ZSTD
+    return CompressionAlgorithm::ZSTD;
+#else
+    return CompressionAlgorithm::ZLIB;
+#endif
+}
+
+float estimate_compression_ratio(CompressionAlgorithm algo, std::span<const uint8_t> data) {
+    // Quick estimation based on data characteristics
+    // This is a simplified heuristic
+    size_t size = data.size();
+    if (size < 64) return 1.0f; // No compression for tiny data
+    
+    // Sample entropy
+    std::array<int, 256> freq = {0};
+    size_t sample_size = std::min(size_t(1024), size);
+    for (size_t i = 0; i < sample_size; ++i) {
+        freq[data[i]]++;
+    }
+    
+    int unique_bytes = 0;
+    for (int f : freq) {
+        if (f > 0) unique_bytes++;
+    }
+    
+    float entropy_factor = unique_bytes / 256.0f;
+    
+    // Rough estimates based on algorithm and entropy
+    switch (algo) {
+        case CompressionAlgorithm::NONE:
+            return 1.0f;
+            
+        case CompressionAlgorithm::LZ4:
+            return 0.7f + (0.25f * entropy_factor);
+            
+        case CompressionAlgorithm::ZLIB:
+            return 0.5f + (0.4f * entropy_factor);
+            
+        case CompressionAlgorithm::ZSTD:
+            return 0.45f + (0.45f * entropy_factor);
+            
+        default:
+            return 1.0f;
+    }
+}
 
 // --- Generic Dispatch Functions ---
 
+std::vector<uint8_t> compress(CompressionAlgorithm algorithm, std::span<const uint8_t> data, CompressionLevel level) {
+    return compress(algorithm, data, get_numeric_level(algorithm, level));
+}
+
+std::vector<uint8_t> compress(const CompressionProfile& profile, std::span<const uint8_t> data) {
+    // Check minimum size threshold
+    if (data.size() < profile.min_size) {
+        return std::vector<uint8_t>(data.begin(), data.end());
+    }
+    
+    CompressionAlgorithm algo = profile.algorithm;
+    
+    // Auto-select algorithm if requested
+    if (algo == CompressionAlgorithm::AUTO || profile.adaptive) {
+        algo = select_best_algorithm(data, profile.numeric_level <= 3);
+    }
+    
+    if (algo == CompressionAlgorithm::NONE) {
+        return std::vector<uint8_t>(data.begin(), data.end());
+    }
+    
+    return compress(algo, data, profile.numeric_level);
+}
+
 std::vector<uint8_t> compress(CompressionAlgorithm algorithm, std::span<const uint8_t> data, int level) {
     switch (algorithm) {
+        case CompressionAlgorithm::NONE:
+            return std::vector<uint8_t>(data.begin(), data.end());
+            
         case CompressionAlgorithm::ZLIB:
             return compress_zlib(data, level == 0 ? 6 : level);
+            
 #ifdef BTOON_WITH_LZ4
         case CompressionAlgorithm::LZ4:
             return compress_lz4(data, level);
 #endif
+
 #ifdef BTOON_WITH_ZSTD
         case CompressionAlgorithm::ZSTD:
             return compress_zstd(data, level);
 #endif
+        
+        case CompressionAlgorithm::AUTO:
+            // AUTO should have been resolved to a specific algorithm before calling this
+            return compress(select_best_algorithm(data, level <= 3), data, level);
+            
         default:
             throw BtoonException("Unsupported compression algorithm");
     }
@@ -34,16 +257,26 @@ std::vector<uint8_t> compress(CompressionAlgorithm algorithm, std::span<const ui
 
 std::vector<uint8_t> decompress(CompressionAlgorithm algorithm, std::span<const uint8_t> compressed_data) {
     switch (algorithm) {
+        case CompressionAlgorithm::NONE:
+            return std::vector<uint8_t>(compressed_data.begin(), compressed_data.end());
+            
         case CompressionAlgorithm::ZLIB:
             return decompress_zlib(compressed_data);
+            
 #ifdef BTOON_WITH_LZ4
         case CompressionAlgorithm::LZ4:
             return decompress_lz4(compressed_data);
 #endif
+
 #ifdef BTOON_WITH_ZSTD
         case CompressionAlgorithm::ZSTD:
             return decompress_zstd(compressed_data);
 #endif
+        
+        case CompressionAlgorithm::AUTO:
+            // AUTO should never appear in decompression (header should specify actual algorithm)
+            throw BtoonException("AUTO compression algorithm cannot be used for decompression");
+            
         default:
             throw BtoonException("Unsupported compression algorithm");
     }
@@ -129,26 +362,63 @@ std::vector<uint8_t> compress_lz4(std::span<const uint8_t> data, int level) {
     if (data.empty()) return {};
     
     size_t max_dst_size = LZ4_compressBound(data.size());
-    std::vector<uint8_t> compressed(max_dst_size);
-
-    int compressed_size = LZ4_compress_default(
-        (const char*)data.data(),
-        (char*)compressed.data(),
-        data.size(),
-        max_dst_size
-    );
+    std::vector<uint8_t> compressed(max_dst_size + sizeof(uint32_t)); // Extra space for original size
+    
+    // Store original size at the beginning for decompression
+    uint32_t original_size = static_cast<uint32_t>(data.size());
+    std::memcpy(compressed.data(), &original_size, sizeof(uint32_t));
+    
+    int compressed_size;
+    
+    if (level <= 1) {
+        // Use fast compression
+        compressed_size = LZ4_compress_default(
+            (const char*)data.data(),
+            (char*)(compressed.data() + sizeof(uint32_t)),
+            data.size(),
+            max_dst_size
+        );
+    } else {
+        // Use high compression (LZ4HC)
+        compressed_size = LZ4_compress_HC(
+            (const char*)data.data(),
+            (char*)(compressed.data() + sizeof(uint32_t)),
+            data.size(),
+            max_dst_size,
+            std::min(level, 12)  // LZ4HC max level is 12
+        );
+    }
 
     if (compressed_size <= 0) {
         throw BtoonException("LZ4 compression failed");
     }
-    compressed.resize(compressed_size);
+    compressed.resize(compressed_size + sizeof(uint32_t));
     return compressed;
 }
 
 std::vector<uint8_t> decompress_lz4(std::span<const uint8_t> compressed_data) {
-    // LZ4 requires the original size to be known. This needs to be handled
-    // by the BTOON compression header format. This is a placeholder.
-    throw BtoonException("LZ4 decompression requires original size; not yet implemented in BTOON header.");
+    if (compressed_data.size() < sizeof(uint32_t)) {
+        throw BtoonException("LZ4 compressed data too small");
+    }
+    
+    // Read original size from the beginning
+    uint32_t original_size;
+    std::memcpy(&original_size, compressed_data.data(), sizeof(uint32_t));
+    
+    std::vector<uint8_t> decompressed(original_size);
+    
+    int decompressed_size = LZ4_decompress_safe(
+        (const char*)(compressed_data.data() + sizeof(uint32_t)),
+        (char*)decompressed.data(),
+        compressed_data.size() - sizeof(uint32_t),
+        original_size
+    );
+    
+    if (decompressed_size != static_cast<int>(original_size)) {
+        throw BtoonException("LZ4 decompression failed");
+    }
+    
+    return decompressed;
 }
 #endif
 
