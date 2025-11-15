@@ -390,7 +390,9 @@ install(EXPORT btoonTargets
 
 # CPack configuration
 include(CPack)
-include(cmake/CPackConfig.cmake)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPackConfig.cmake")
+    include(cmake/CPackConfig.cmake)
+endif()
 
 # Generate config file
 include(CMakePackageConfigHelpers)
