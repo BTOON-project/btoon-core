@@ -15,6 +15,7 @@
 #include <vector>
 #include <limits>
 #include <optional>
+#include <memory>
 
 namespace btoon {
 
