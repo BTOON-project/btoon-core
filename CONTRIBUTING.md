@@ -231,7 +231,7 @@ All contributions require review:
 - **Discord/Slack**: Real-time discussion
 - **GitHub Discussions**: Questions and ideas
 - **Stack Overflow**: Tag `btoon`
-- **Email**: dev@btoon.org
+- **Email**: dev@btoon.net
 
 ## Recognition
 

@@ -77,7 +77,7 @@ setup(
     name="btoon",
     version=VERSION,
     author="BTOON Developers",
-    author_email="dev@btoon.org",
+    author_email="dev@btoon.net",
     description="High-performance binary serialization format for Python",
     long_description=read_long_description(),
     long_description_content_type="text/markdown",
