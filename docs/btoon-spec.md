@@ -2,7 +2,10 @@
 
 ## Version 0.0.1
 
-BTOON (Binary TOON) is a high-performance binary serialization format designed specifically for TOON (Token-Oriented Object Notation) tabular data. It extends MessagePack with custom optimizations while maintaining full MessagePack compatibility.
+**Date:** November 15, 2025  
+**Status:** Pre-Release
+
+BTOON (Binary Tree Object Notation) is a high-performance binary serialization format optimized for modern applications. It provides efficient encoding, rich type support, and advanced features like schema management and compression.
 
 ## Overview
 

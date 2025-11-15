@@ -228,10 +228,9 @@ All contributions require review:
 
 ## Getting Help
 
-- **Discord/Slack**: Real-time discussion
+- **GitHub Issues**: For questions and support
 - **GitHub Discussions**: Questions and ideas
-- **Stack Overflow**: Tag `btoon`
-- **Email**: dev@btoon.net
+- **Email**: support@btoon.net
 
 ## Recognition
 
