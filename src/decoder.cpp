@@ -79,6 +79,9 @@ Value Decoder::decode(std::span<const uint8_t> buffer, size_t& pos) const {
         case 0xc7: case 0xc8: case 0xc9: { // Variable extensions
             return decodeExtension(buffer, pos);
         }
+        case 0xd9: case 0xda: case 0xdb: return Value(decodeString(buffer, pos)); // str8, str16, str32
+        case 0xdc: case 0xdd: return Value(decodeArray(buffer, pos)); // array16, array32
+        case 0xde: case 0xdf: return Value(decodeMap(buffer, pos)); // map16, map32
         default: throw BtoonException("Unknown marker");
     }
 }
