@@ -438,7 +438,8 @@ public:
                     result.stats->string_count++;
                     result.stats->largest_string = std::max(result.stats->largest_string, arg.length());
                 }
-            } else if constexpr (std::is_same_v<T, Binary>) {
+            }
+            else if constexpr (std::is_same_v<T, Binary>) {
                 if (arg.size() > options.max_binary_length) {
                     result.addError("Binary data exceeds maximum length");
                 }
@@ -446,7 +447,8 @@ public:
                     result.stats->binary_count++;
                     result.stats->largest_binary = std::max(result.stats->largest_binary, arg.size());
                 }
-            } else if constexpr (std::is_same_v<T, Array>) {
+            }
+            else if constexpr (std::is_same_v<T, Array>) {
                 if (arg.size() > options.max_array_size) {
                     result.addError("Array exceeds maximum size");
                 }
@@ -477,7 +479,8 @@ public:
                         result.stats->largest_map = std::max(result.stats->largest_map, elemResult.stats->largest_map);
                     }
                 }
-            } else if constexpr (std::is_same_v<T, Map>) {
+            }
+            else if constexpr (std::is_same_v<T, Map>) {
                 if (arg.size() > options.max_map_size) {
                     result.addError("Map exceeds maximum size");
                 }
@@ -518,15 +521,18 @@ public:
                         result.stats->largest_map = std::max(result.stats->largest_map, valResult.stats->largest_map);
                     }
                 }
-            } else if constexpr (std::is_same_v<T, Float>) {
+            }
+            else if constexpr (std::is_same_v<T, Float>) {
                 if (!TypeValidator::validateFloat(arg, options.allow_nan_float, options.allow_inf_float)) {
                     result.addError("Invalid float value");
                 }
-            } else if constexpr (std::is_same_v<T, Extension>) {
+            }
+            else if constexpr (std::is_same_v<T, Extension>) {
                 if (options.validate_extension_types && !TypeValidator::validateExtension(arg)) {
                     result.addError("Invalid extension type: " + std::to_string(arg.type));
                 }
-            } else if constexpr (std::is_same_v<T, Timestamp>) {
+            }
+            else if constexpr (std::is_same_v<T, Timestamp>) {
                 if (!TypeValidator::validateTimestamp(arg)) {
                     result.addError("Invalid timestamp value");
                 }

@@ -24,7 +24,29 @@ option(BUILD_FUZZ_TESTS "Build fuzz testing targets" OFF)
 option(ENABLE_COVERAGE "Enable code coverage" OFF)
 
 # Compiler-specific options
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+if(MSVC)
+    # MSVC specific flags for C++20 conformance
+    add_compile_options(
+        /permissive-        # Strict conformance mode
+        /Zc:__cplusplus     # Enable updated __cplusplus macro
+        /std:c++20          # C++20 standard
+        /EHsc               # Enable C++ exception handling
+        /W4                 # Warning level 4
+        /wd4100             # Disable unreferenced parameter warning
+        /wd4127             # Disable conditional expression is constant
+        /wd4996             # Disable deprecated warnings
+    )
+    
+    # Optimization flags
+    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+        add_compile_options(/O2 /GL)
+    else()
+        add_compile_options(/Od /Zi)
+    endif()
+    
+    # Fix for if constexpr issues
+    add_compile_definitions(_HAS_CXX17=1 _HAS_CXX20=1)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(
         -Wall
         -Wextra
