@@ -267,6 +267,13 @@ if(BUILD_TOOLS)
     target_link_libraries(btoon-schema btoon_core)
     target_compile_features(btoon-schema PRIVATE cxx_std_17) # For filesystem
     install(TARGETS btoon-schema RUNTIME DESTINATION bin)
+    
+    # btoon-convert format converter tool
+    add_executable(btoon-convert tools/btoon-convert.cpp)
+    target_include_directories(btoon-convert PRIVATE include/third_party)
+    target_link_libraries(btoon-convert btoon_core)
+    target_compile_features(btoon-convert PRIVATE cxx_std_17) # For filesystem
+    install(TARGETS btoon-convert RUNTIME DESTINATION bin)
 endif()
 
 # Installation
