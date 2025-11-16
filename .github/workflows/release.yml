@@ -97,9 +97,10 @@ jobs:
             -DBUILD_TOOLS=ON \
             -DBUILD_TESTS=OFF \
             -DBUILD_EXAMPLES=OFF \
-            ${{ matrix.os == 'windows' && format('-G "Visual Studio 17 2022" -A {0}', matrix.cmake_arch) || '' }} \
+            ${{ matrix.os == 'windows' && format('-G "Visual Studio 17 2022" -A {0} -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake', matrix.cmake_arch) || '' }} \
             ${{ matrix.arch == 'arm64' && matrix.os == 'linux' && '-DCMAKE_TOOLCHAIN_FILE=../cmake/toolchain-linux-arm64.cmake' || '' }} \
             ${{ matrix.arch == 'arm64' && matrix.os == 'darwin' && '-DCMAKE_OSX_ARCHITECTURES=arm64' || '' }}
+        shell: bash
             
       - name: Build
         run: |
