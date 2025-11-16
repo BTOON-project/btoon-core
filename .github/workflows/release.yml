@@ -93,7 +93,7 @@ jobs:
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_STANDARD=20 \
-            -DBUILD_SHARED_LIBS=ON \
+            -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_TOOLS=ON \
             -DBUILD_TESTS=OFF \
             -DBUILD_EXAMPLES=OFF \
@@ -114,9 +114,9 @@ jobs:
           
           # Copy binaries
           if [ "${{ matrix.os }}" = "windows" ]; then
-            cp ../../build/Release/*.exe .
-            cp ../../build/Release/*.dll .
-            cp ../../build/Release/*.lib .
+            cp ../../build/Release/*.exe . 2>/dev/null || true
+            cp ../../build/Release/*.dll . 2>/dev/null || true
+            cp ../../build/Release/*.lib . 2>/dev/null || true
           else
             cp ../../build/btoon* . 2>/dev/null || true
             cp ../../build/*.so* . 2>/dev/null || true
