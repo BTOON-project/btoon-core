@@ -1,9 +1,10 @@
-name: Build and Release Binaries
+name: Build and Release Binaries (DEPRECATED - Use release.yml instead)
+
+# NOTE: This workflow is deprecated and kept for reference only.
+# Use release.yml for btoon-core releases.
+# Language bindings should be released from their respective repositories.
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       version:
@@ -75,7 +76,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           
@@ -201,12 +202,12 @@ jobs:
         
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
           
@@ -228,7 +229,7 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
-          name: python-wheels
+          name: python-wheel-${{ matrix.os }}-${{ matrix.python }}
           path: bindings/python/dist/*.whl
           
   # Build Node.js packages
@@ -238,12 +239,12 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: '18'
           
@@ -279,7 +280,7 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           
@@ -315,7 +316,7 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -436,7 +437,7 @@ jobs:
       - name: Publish to PyPI
         run: |
           pip install twine
-          twine upload artifacts/python-wheels/*.whl
+          twine upload artifacts/python-wheel-*/*.whl
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}

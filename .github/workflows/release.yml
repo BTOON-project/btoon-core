@@ -9,6 +9,11 @@ on:
       version:
         description: 'Version to release (e.g., 0.0.1)'
         required: true
+      trigger_bindings:
+        description: 'Trigger language binding builds (optional)'
+        required: false
+        type: boolean
+        default: false
 
 env:
   CMAKE_VERSION: '3.20'
@@ -55,7 +60,7 @@ jobs:
             
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           
@@ -143,7 +148,7 @@ jobs:
     runs-on: ubuntu-20.04
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         
       - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v11
@@ -187,7 +192,7 @@ jobs:
       
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -251,10 +256,11 @@ jobs:
             artifacts/SHA256SUMS
             artifacts/MD5SUMS
             
-  # Trigger builds in language binding repositories
+  # Trigger builds in language binding repositories (optional)
   trigger-bindings:
     name: Trigger Language Bindings
     needs: create-release
+    if: github.event.inputs.trigger_bindings == 'true'
     runs-on: ubuntu-20.04
     strategy:
       matrix:

@@ -23,13 +23,13 @@ jobs:
     
     steps:
       - name: Checkout btoon-core
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: BTOON-project/btoon-core
           path: btoon-core
       
       - name: Checkout ${{ matrix.language }} bindings
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: BTOON-project/btoon-${{ matrix.language }}
           path: btoon-${{ matrix.language }}
@@ -78,13 +78,13 @@ jobs:
             
     steps:
       - name: Checkout btoon-core
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: BTOON-project/btoon-core
           path: btoon-core
           
       - name: Checkout consumer bindings
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: BTOON-project/btoon-${{ matrix.consumer }}
           path: btoon-${{ matrix.consumer }}
@@ -126,13 +126,13 @@ jobs:
         
     steps:
       - name: Checkout old version
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: v${{ matrix.old_version }}
           path: btoon-old
           
       - name: Checkout new version
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: ${{ matrix.new_version }}
           path: btoon-new
@@ -225,7 +225,7 @@ jobs:
     runs-on: ubuntu-20.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         
       - name: Build with sanitizers
         run: |
