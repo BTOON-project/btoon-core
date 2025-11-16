@@ -73,13 +73,6 @@ jobs:
             cmake_args: -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 17 2022" -A Win32
             artifact_name: btoon-windows-x86
 
-          # Windows ARM64
-          - name: windows-arm64
-            os: windows-2022
-            arch: arm64
-            cmake_args: -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 17 2022" -A ARM64
-            artifact_name: btoon-windows-arm64
-            
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -360,7 +353,6 @@ jobs:
           #### Windows
           - [btoon-windows-x64.zip] - Windows x64
           - [btoon-windows-x86.zip] - Windows x86 (32-bit)
-          - [btoon-windows-arm64.zip] - Windows ARM64
           
           ### Language Bindings
           
