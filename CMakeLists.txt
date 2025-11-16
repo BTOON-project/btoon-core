@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 cmake_policy(VERSION 3.20)
+
+# Enable MSVC runtime library selection
+if(POLICY CMP0091)
+    cmake_policy(SET CMP0091 NEW)
+endif()
+
+# Use dynamic runtime library for MSVC (must be set before project())
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+
 project(btoon VERSION 0.0.1 LANGUAGES CXX)
 
 # Include CMake modules
@@ -49,9 +58,6 @@ if(MSVC)
 
     # Prevent Windows min/max macros from conflicting with std::numeric_limits
     add_compile_definitions(NOMINMAX)
-
-    # Use dynamic runtime library for compatibility with Node.js addons and vcpkg
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL$<$<CONFIG:Debug>:Debug>")
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(
         -Wall
