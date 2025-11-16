@@ -49,6 +49,9 @@ if(MSVC)
 
     # Prevent Windows min/max macros from conflicting with std::numeric_limits
     add_compile_definitions(NOMINMAX)
+
+    # Use dynamic runtime library for compatibility with Node.js addons and vcpkg
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL$<$<CONFIG:Debug>:Debug>")
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(
         -Wall
