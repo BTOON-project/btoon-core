@@ -35,9 +35,35 @@ jobs:
           path: btoon-${{ matrix.language }}
           submodules: recursive
       
-      - name: Setup ${{ matrix.language }} environment
-        uses: ./.github/actions/setup-${{ matrix.language }}
-        
+      - name: Setup Python
+        if: matrix.language == 'python'
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node.js
+        if: matrix.language == 'javascript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Go
+        if: matrix.language == 'go'
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Setup PHP
+        if: matrix.language == 'php'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake zlib1g-dev libssl-dev
+
       - name: Build ${{ matrix.language }}
         run: |
           cd btoon-${{ matrix.language }}
@@ -96,9 +122,35 @@ jobs:
           name: test-data-${{ matrix.producer }}
           path: test-data/
           
-      - name: Setup ${{ matrix.consumer }} environment
-        uses: ./.github/actions/setup-${{ matrix.consumer }}
-        
+      - name: Setup Python
+        if: matrix.consumer == 'python'
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node.js
+        if: matrix.consumer == 'javascript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Go
+        if: matrix.consumer == 'go'
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Setup PHP
+        if: matrix.consumer == 'php'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake zlib1g-dev libssl-dev
+
       - name: Build ${{ matrix.consumer }}
         run: |
           cd btoon-${{ matrix.consumer }}
