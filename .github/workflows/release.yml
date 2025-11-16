@@ -26,6 +26,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         include:
           # Linux x64
@@ -81,6 +82,15 @@ jobs:
         run: |
           brew install zlib openssl lz4 zstd
           
+      - name: Cache vcpkg packages
+        if: matrix.os == 'windows'
+        uses: actions/cache@v4
+        with:
+          path: C:/vcpkg/installed
+          key: vcpkg-${{ matrix.arch }}-${{ hashFiles('**/vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ matrix.arch }}-
+
       - name: Install dependencies (Windows)
         if: matrix.os == 'windows'
         run: |
