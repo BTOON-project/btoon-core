@@ -9,6 +9,13 @@
 #ifndef BTOON_VALIDATOR_H
 #define BTOON_VALIDATOR_H
 
+// Prevent Windows from defining min/max macros that conflict with std::numeric_limits
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
+
 #include "btoon.h"
 #include <span>
 #include <string>
