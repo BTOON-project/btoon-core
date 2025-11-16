@@ -887,7 +887,7 @@ void convert_batch(const std::vector<std::string>& input_files,
                 default: ext = ".out"; break;
             }
             
-            std::string output_file = fs::path(output_dir) / (base + ext);
+            std::string output_file = (fs::path(output_dir) / (base + ext)).string();
             
             // Write output
             write_output(output_file, data, file_opts.output_format, file_opts);

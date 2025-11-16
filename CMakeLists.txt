@@ -162,6 +162,11 @@ target_link_libraries(btoon_core
         OpenSSL::SSL
 )
 
+# Link Windows socket library for byte order functions (htonl, ntohl, etc.)
+if(WIN32)
+    target_link_libraries(btoon_core PUBLIC ws2_32)
+endif()
+
 # Find and link optional compression libraries
 # PkgConfig is only available on Unix systems
 if(PKG_CONFIG_FOUND)
