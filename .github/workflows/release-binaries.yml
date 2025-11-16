@@ -183,7 +183,7 @@ jobs:
         shell: bash
         
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
           path: |
@@ -226,7 +226,7 @@ jobs:
           python -c "import btoon; print(btoon.__version__)"
           
       - name: Upload wheel
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: python-wheels
           path: bindings/python/dist/*.whl
@@ -267,7 +267,7 @@ jobs:
           npm pack
           
       - name: Upload NPM package
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: npm-package
           path: bindings/javascript/*.tgz
@@ -318,7 +318,7 @@ jobs:
         uses: actions/checkout@v3
         
       - name: Download all artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           path: artifacts/
           

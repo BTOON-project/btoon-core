@@ -49,7 +49,7 @@ jobs:
           ./generate-interop-data.sh
           
       - name: Upload test data
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: test-data-${{ matrix.language }}
           path: btoon-${{ matrix.language }}/interop-data/
@@ -91,7 +91,7 @@ jobs:
           submodules: recursive
           
       - name: Download producer test data
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: test-data-${{ matrix.producer }}
           path: test-data/
@@ -214,7 +214,7 @@ jobs:
             --output performance-report.html
             
       - name: Upload report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: performance-report
           path: performance-report.html
