@@ -1,13 +1,7 @@
 name: Cross-Language Interoperability Tests
 
 on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main]
-  schedule:
-    # Run nightly at 2 AM UTC
-    - cron: '0 2 * * *'
+  workflow_dispatch:
 
 env:
   BTOON_VERSION: 0.0.1
