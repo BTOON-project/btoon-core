@@ -348,3 +348,29 @@ TEST(Hardening, ZstdWindowIsBoundedByContent) {
     EXPECT_EQ(code_of(envelope((13 << 3) | 1)), ErrorCode::invalid_envelope);  // 9 MiB
     EXPECT_EQ(code_of(envelope(31 << 3)), ErrorCode::invalid_envelope);       // 2 TiB
 }
+
+#if !defined(_WIN32) && !defined(__ANDROID__)
+#include <unistd.h>
+
+#include "btoon/zero_copy.h"
+
+// Only the creator of a named segment removes the name; a process that opened it
+// must not unlink it for everyone else.
+TEST(SharedMemory, OpenerDoesNotUnlinkTheCreatorsSegment) {
+    const std::string name = "/btoon-t" + std::to_string(getpid());
+    auto creator = SharedMemoryBuffer::create(name, 4096, true);
+    ASSERT_TRUE(creator);
+    creator->data()[0] = 42;
+    {
+        auto opener = SharedMemoryBuffer::create(name, 4096, false);
+        ASSERT_TRUE(opener);
+        EXPECT_EQ(opener->data()[0], 42);
+    }
+    auto again = SharedMemoryBuffer::create(name, 4096, false);
+    ASSERT_TRUE(again);
+    EXPECT_EQ(again->data()[0], 42);
+    again.reset();
+    creator.reset();
+    EXPECT_FALSE(SharedMemoryBuffer::create(name, 4096, false));
+}
+#endif

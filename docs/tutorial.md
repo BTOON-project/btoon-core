@@ -1,6 +1,6 @@
 # Tutorial
 
-A tour of BTOON from C++. Every snippet compiles against 0.1.1. Link with
+A tour of BTOON from C++. Every snippet compiles against 0.1.2. Link with
 `btoon::btoon_core` (CMake) or `-lbtoon_core -lz`.
 
 ## 1. Values in, bytes out

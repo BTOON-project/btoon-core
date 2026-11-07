@@ -3,10 +3,10 @@
 # from a GitHub release of BTOON-project/btoon-core.
 #
 #   curl -fsSL https://raw.githubusercontent.com/BTOON-project/btoon-core/main/scripts/install.sh | bash
-#   VERSION=0.1.1 PREFIX=$HOME/.local bash install.sh
+#   VERSION=0.1.2 PREFIX=$HOME/.local bash install.sh
 set -euo pipefail
 
-VERSION="${VERSION:-0.1.1}"
+VERSION="${VERSION:-0.1.2}"
 PREFIX="${PREFIX:-/usr/local}"
 REPO="BTOON-project/btoon-core"
 
