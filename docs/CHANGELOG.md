@@ -5,7 +5,17 @@ All notable changes to BTOON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - Unreleased
+## [0.1.1] - 2026-11-07
+
+### Fixed
+- CMake package: `btoonConfig.cmake` now finds the codec libraries the build used (LZ4,
+  Zstandard, Brotli, Snappy), so `find_package(btoon)` works for builds with optional
+  codecs. Codecs are looked up as CMake packages first (as vcpkg and Conan provide them),
+  then with pkg-config.
+- `Value != Value` compiles and uses the same semantic comparison as `==` (before, it
+  picked `std::variant`'s operator and failed to compile).
+
+## [0.1.0] - 2026-11-07
 
 The first release in which the specification, the reference implementation and the
 conformance vectors agree. **Wire-format note:** 0.0.x encoders produced Date, DateTime,
