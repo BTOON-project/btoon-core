@@ -83,7 +83,7 @@ Value back = decode(bytes, {.max_decompressed_size = 16 << 20});
 ```
 
 Other functions: `is_tabular(const Array&)` reports whether the encoder would use the
-columnar form. `version()` returns `"0.1.0"` and `spec_version()` returns `"0.1"`.
+columnar form. `version()` returns `"0.1.1"` and `spec_version()` returns `"0.1"`.
 
 ## Errors
 

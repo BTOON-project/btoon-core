@@ -24,8 +24,8 @@
 // Single source of truth for the library version (CMake parses these lines).
 #define BTOON_VERSION_MAJOR 0
 #define BTOON_VERSION_MINOR 1
-#define BTOON_VERSION_PATCH 0
-#define BTOON_VERSION_STRING "0.1.0"
+#define BTOON_VERSION_PATCH 1
+#define BTOON_VERSION_STRING "0.1.1"
 /// Version of docs/SPEC.md implemented by this library.
 #define BTOON_SPEC_VERSION "0.1"
 
@@ -243,6 +243,9 @@ struct Value : std::variant<
             return arg == *std::get_if<T>(&other);
         }, static_cast<const variant&>(*this));
     }
+    // Declared so that `a != b` uses the semantic comparison above instead of
+    // std::variant's operator!=, which doesn't compile for these alternatives.
+    bool operator!=(const Value& other) const { return !(*this == other); }
 };
 
 using Array = std::vector<Value>;

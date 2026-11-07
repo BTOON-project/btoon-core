@@ -276,6 +276,8 @@ TEST(Hardening, IntegerEqualityAcrossRepresentations) {
     EXPECT_EQ(decode(encode(Value(Uint(std::numeric_limits<uint64_t>::max())))),
               Value(Uint(std::numeric_limits<uint64_t>::max())));
     EXPECT_EQ((BigInt{{0x00, 0x05}}), (BigInt{{0x05}}));
+    EXPECT_FALSE(Value(Int(5)) != Value(Uint(5)));  // != uses the same semantic comparison
+    EXPECT_TRUE(Value(String("a")) != Value(String("b")));
 }
 
 TEST(Hardening, NanIsCanonical) {
