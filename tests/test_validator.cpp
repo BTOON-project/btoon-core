@@ -188,7 +188,7 @@ TEST_F(ValidatorTest, TypeValidation) {
     EXPECT_TRUE(TypeValidator::validateExtension(valid_ext));
     
     Extension reserved_ext{-50, {0x01}};  // Reserved range
-    EXPECT_FALSE(TypeValidator::validateExtension(reserved_ext));
+    EXPECT_TRUE(TypeValidator::validateExtension(reserved_ext));  // SPEC §5: reserved ids are generic, not invalid
 }
 
 TEST_F(ValidatorTest, SecurityChecks) {

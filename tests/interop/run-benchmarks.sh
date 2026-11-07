@@ -9,7 +9,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/benchmark-results}"
 
 echo "BTOON Cross-Language Performance Benchmark"
 echo "=========================================="
-echo "Version: 0.0.1"
+echo "Version: $(sed -n 's/^#define BTOON_VERSION_STRING "\(.*\)"/\1/p' "$(dirname "$0")/../../include/btoon/btoon.h")"
 echo ""
 
 # Create output directory

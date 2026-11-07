@@ -14,7 +14,7 @@ $ErrorActionPreference = "Stop"
 # Script configuration
 $RootDir = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $BuildPath = Join-Path $RootDir $BuildDir
-$Version = "0.0.1"
+$Version = (Select-String -Path (Join-Path $PSScriptRoot "..\include\btoon\btoon.h") -Pattern '#define BTOON_VERSION_STRING "(.*)"').Matches[0].Groups[1].Value
 
 Write-Host "Building BTOON Release Binaries" -ForegroundColor Cyan
 Write-Host "===============================" -ForegroundColor Cyan

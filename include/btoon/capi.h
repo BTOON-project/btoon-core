@@ -6,7 +6,6 @@
 //  ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝
 //
 //  BTOON Core
-//  Version 0.0.1
 //  https://btoon.net //  https://btoon.net //  https://btoon.net //  https://btoon.net //  https://btoon.net & https://github.com/BTOON-project/btoon-coren// https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core
 //
 // SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
@@ -157,7 +156,9 @@ BTOON_API void btoon_value_destroy(btoon_value_t* value);
 typedef enum {
     BTOON_COMPRESSION_ZLIB = 0,
     BTOON_COMPRESSION_LZ4 = 1,
-    BTOON_COMPRESSION_ZSTD = 2
+    BTOON_COMPRESSION_ZSTD = 2,
+    BTOON_COMPRESSION_BROTLI = 3,
+    BTOON_COMPRESSION_SNAPPY = 4
 } btoon_compression_t;
 
 typedef struct {
@@ -182,6 +183,9 @@ BTOON_API btoon_result_t btoon_encode(const btoon_value_t* value, const btoon_en
 BTOON_API btoon_value_t* btoon_decode(const uint8_t* data, size_t size, const btoon_decode_options_t* options, char** error);
 
 BTOON_API void btoon_free_result(btoon_result_t result);
+
+/** Frees an error string returned through btoon_decode's `error` out-parameter. */
+BTOON_API void btoon_free_error(char* error);
 
 // --- Version Info ---
 BTOON_API const char* btoon_version(void);

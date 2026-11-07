@@ -12,6 +12,7 @@
  */
 
 #include "btoon/btoon.h"
+#include "json_mapping.h"
 #include "btoon/schema.h"
 #include "btoon/encoder.h"
 #include "btoon/decoder.h"
@@ -83,7 +84,7 @@ int main(int argc, char* argv[]) {
 }
 
 void print_usage(const std::string& program_name) {
-    std::cout << "BTOON Schema Compiler v0.0.1" << std::endl;
+    std::cout << "BTOON Schema Compiler v" << btoon::version() << std::endl;
     std::cout << "Usage: " << program_name << " <command> [options]" << std::endl;
     std::cout << std::endl;
     std::cout << "Commands:" << std::endl;
@@ -891,40 +892,7 @@ Schema load_schema_file(const std::string& path) {
 }
 
 std::string value_to_json_string(const Value& v, bool pretty) {
-    json j;
-    
-    std::visit([&j](auto&& arg) {
-        using T = std::decay_t<decltype(arg)>;
-        if constexpr (std::is_same_v<T, Nil>) {
-            j = nullptr;
-        } else if constexpr (std::is_same_v<T, Bool>) {
-            j = arg;
-        } else if constexpr (std::is_same_v<T, Int>) {
-            j = arg;
-        } else if constexpr (std::is_same_v<T, Uint>) {
-            j = arg;
-        } else if constexpr (std::is_same_v<T, Float>) {
-            j = arg;
-        } else if constexpr (std::is_same_v<T, String>) {
-            j = arg;
-        } else if constexpr (std::is_same_v<T, Binary>) {
-            j = json::binary(arg);
-        } else if constexpr (std::is_same_v<T, Array>) {
-            j = json::array();
-            for (size_t i = 0; i < arg.size(); ++i) {
-                json item_json;
-                // Recursive conversion would be needed here
-                j.push_back(item_json);
-            }
-        } else if constexpr (std::is_same_v<T, Map>) {
-            j = json::object();
-            for (const auto& [key, value] : arg) {
-                // Recursive conversion would be needed here
-                j[key] = json();
-            }
-        }
-    }, v);
-    
+    auto j = btoon::tools::to_json(v);  // recursive, lossless (tools/json_mapping.h)
     return pretty ? j.dump(2) : j.dump();
 }
 

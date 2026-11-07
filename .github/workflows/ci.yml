@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-gcc, os: ubuntu-latest, cxx: g++, codecs: true, werror: ON }
+          - { name: linux-clang, os: ubuntu-latest, cxx: clang++, codecs: false, werror: ON }
+          - { name: macos, os: macos-latest, cxx: clang++, codecs: false, werror: ON }
+          # MSVC /W4 warnings in legacy code (schema/validator) aren't errors yet.
+          - { name: windows-msvc, os: windows-latest, cxx: cl, codecs: false, werror: OFF }
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev liblz4-dev libzstd-dev libbrotli-dev libsnappy-dev pkg-config
+      - name: Install zlib (Windows)
+        if: runner.os == 'Windows'
+        run: vcpkg install zlib:x64-windows
+      - name: Configure
+        shell: bash
+        run: |
+          args=(-DCMAKE_BUILD_TYPE=Debug -DBTOON_WARNINGS_AS_ERRORS=${{ matrix.werror }})
+          if [ "${{ matrix.codecs }}" = "true" ]; then
+            args+=(-DBTOON_WITH_LZ4=ON -DBTOON_WITH_ZSTD=ON -DBTOON_WITH_BROTLI=ON -DBTOON_WITH_SNAPPY=ON)
+          fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            args+=(-DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake")
+          else
+            args+=(-DCMAKE_CXX_COMPILER=${{ matrix.cxx }})
+          fi
+          cmake -S . -B build "${args[@]}"
+      - name: Build
+        run: cmake --build build --config Debug --parallel
+      - name: Test
+        run: ctest --test-dir build --build-config Debug --output-on-failure
+
+  sanitizers:
+    name: asan-ubsan (all codecs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev liblz4-dev libzstd-dev libbrotli-dev libsnappy-dev pkg-config
+      - run: >
+          cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug -DENABLE_SANITIZERS=ON
+          -DBTOON_WITH_LZ4=ON -DBTOON_WITH_ZSTD=ON -DBTOON_WITH_BROTLI=ON -DBTOON_WITH_SNAPPY=ON
+      - run: cmake --build build --parallel
+      - run: ctest --test-dir build --output-on-failure
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1
+      - name: Longer mutation fuzzing
+        run: build/btoon_fuzz_smoke 500000
+
+  vectors:
+    name: conformance vectors are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uv run --with msgpack --with zstandard --with lz4 --with brotli python tests/vectors/generate.py --check
+
+  fuzz:
+    name: libFuzzer (2 minutes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - run: >
+          cmake -S . -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DBUILD_FUZZ_TESTS=ON -DBUILD_TESTS=OFF -DBUILD_TOOLS=OFF -DBUILD_EXAMPLES=OFF
+      - run: cmake --build build-fuzz --target fuzz_decoder --parallel
+      - run: python3 fuzz/make_corpus.py
+      - run: ./build-fuzz/fuzz_decoder -max_total_time=120 -rss_limit_mb=2048 -timeout=10 fuzz/corpus
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: |
+            crash-*
+            leak-*
+            timeout-*
+            oom-*

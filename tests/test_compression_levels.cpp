@@ -226,16 +226,16 @@ TEST_F(CompressionLevelsTest, LZ4Levels) {
     std::vector<uint8_t> test_data = highly_compressible;
     
     // Test LZ4 fast mode
-    auto fast_compressed = compress_lz4(test_data, 0);
+    auto fast_compressed = compress(CompressionAlgorithm::LZ4, test_data, 0);
     std::cout << "LZ4 Fast: " << fast_compressed.size() << " bytes\n";
     
     // Test LZ4HC with different levels
     for (int level = 4; level <= 12; level += 4) {
-        auto compressed = compress_lz4(test_data, level);
+        auto compressed = compress(CompressionAlgorithm::LZ4, test_data, level);
         std::cout << "LZ4HC Level " << level << ": " << compressed.size() << " bytes\n";
         
-        // Verify decompression
-        auto decompressed = decompress_lz4(compressed);
+        // LZ4 block payloads don't carry their size; the envelope header does.
+        auto decompressed = decompress(CompressionAlgorithm::LZ4, compressed, test_data.size());
         EXPECT_EQ(test_data.size(), decompressed.size());
         EXPECT_EQ(test_data, decompressed);
     }
@@ -252,12 +252,12 @@ TEST_F(CompressionLevelsTest, ZSTDLevels) {
     std::vector<int> levels = {1, 3, 5, 9, 15, 19};
     
     for (int level : levels) {
-        auto compressed = compress_zstd(test_data, level);
+        auto compressed = compress(CompressionAlgorithm::ZSTD, test_data, level);
         std::cout << "ZSTD Level " << std::setw(2) << level << ": " 
                   << compressed.size() << " bytes\n";
         
         // Verify decompression
-        auto decompressed = decompress_zstd(compressed);
+        auto decompressed = decompress(CompressionAlgorithm::ZSTD, compressed);
         EXPECT_EQ(test_data.size(), decompressed.size());
         EXPECT_EQ(test_data, decompressed);
     }

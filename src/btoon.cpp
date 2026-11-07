@@ -1,251 +1,211 @@
-#ifdef _WIN32
-    #ifndef WIN32_LEAN_AND_MEAN
-        #define WIN32_LEAN_AND_MEAN
-    #endif
-    #include <winsock2.h>
-    #include <ws2tcpip.h>
-#else
-    #include <arpa/inet.h>
-#endif
-
+// SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
+// SPDX-License-Identifier: MIT
+//
+// Top-level encode()/decode(): canonical encoding plus the compression
+// (docs/SPEC.md §6) and signed (§8) envelopes, layered as
+// sign(compress(encode(value))).
 #include "btoon/btoon.h"
-#include "btoon/encoder.h"
 #include "btoon/decoder.h"
-#include "btoon/compression.h"
-#include <set>
-#include <vector>
-#include <algorithm>
-#include <stdexcept>
-#include <cstring>
+#include "btoon/encoder.h"
+#include "btoon/security.h"
+#include "internal.h"
+
 #include <chrono>
+#include <cmath>
 
 namespace btoon {
 
+using namespace detail;
+
 namespace {
-struct CompressionHeader {
-    uint32_t magic;
-    uint8_t version;
-    uint8_t algorithm;
-    uint16_t reserved;
-    uint32_t compressed_size;
-    uint32_t uncompressed_size;
-};
-const uint32_t BTOON_MAGIC = 0x42544F4E; // "BTON"
-} // namespace
+
+constexpr uint8_t kCompressionMagic[4] = {'B', 'T', 'O', 'N'};
+constexpr size_t kCompressionHeaderSize = 16;
+constexpr uint8_t kCompressionVersion = 1;
+
+bool is_compressed_envelope(std::span<const uint8_t> d) {
+    return d.size() >= 4 && std::memcmp(d.data(), kCompressionMagic, 4) == 0;
+}
+
+CompressionAlgorithm choose_algorithm(const EncodeOptions& o, std::span<const uint8_t> raw, int* level,
+                                      size_t* min_size) {
+    CompressionAlgorithm algo;
+    *min_size = o.min_compression_size;
+    if (o.use_profile) {
+        algo = o.compression_profile.algorithm;
+        *level = o.compression_profile.numeric_level;
+        *min_size = o.compression_profile.min_size;
+        if (algo == CompressionAlgorithm::AUTO || o.compression_profile.adaptive) {
+            algo = select_best_algorithm(raw, *level <= 3);
+        }
+    } else if (o.adaptive_compression || o.compression_algorithm == CompressionAlgorithm::AUTO) {
+        algo = select_best_algorithm(raw, o.compression_level <= 2 || o.compression_preset == CompressionLevel::FAST);
+        *level = o.compression_level;
+    } else {
+        algo = o.compression_algorithm == CompressionAlgorithm::NONE ? CompressionAlgorithm::ZLIB
+                                                                      : o.compression_algorithm;
+        *level = o.compression_level;
+    }
+    if (algo != CompressionAlgorithm::NONE && *level == 0 && o.compression_preset != CompressionLevel::CUSTOM) {
+        *level = get_numeric_level(algo, o.compression_preset);
+    }
+    return algo;
+}
+
+std::vector<uint8_t> maybe_compress(std::vector<uint8_t> raw, const EncodeOptions& o) {
+    int level = 0;
+    size_t min_size = 0;
+    CompressionAlgorithm algo = choose_algorithm(o, raw, &level, &min_size);
+    if (algo == CompressionAlgorithm::NONE) return raw;
+    // An unavailable algorithm is a configuration error regardless of input size (§6).
+    if (!compression_available(algo)) {
+        fail(ErrorCode::unsupported_compression,
+             std::string("compression algorithm not available in this build: ") + compression_algorithm_name(algo));
+    }
+    if (raw.size() < min_size) return raw;
+    if (raw.size() > 0xffffffffULL) fail(ErrorCode::size_limit, "document too large to compress");
+    std::vector<uint8_t> payload = compress(algo, raw, level);
+    // Only worth it if the envelope saves at least 5%: 20 × envelope ≤ 19 × input (§6).
+    const uint64_t envelope_size = uint64_t(payload.size()) + kCompressionHeaderSize;
+    if (20 * envelope_size > 19 * uint64_t(raw.size())) return raw;
+    std::vector<uint8_t> out(kCompressionHeaderSize + payload.size());
+    std::memcpy(out.data(), kCompressionMagic, 4);
+    out[4] = kCompressionVersion;
+    out[5] = static_cast<uint8_t>(algo);
+    out[6] = 0;
+    out[7] = 0;
+    store_be32(out.data() + 8, static_cast<uint32_t>(payload.size()));
+    store_be32(out.data() + 12, static_cast<uint32_t>(raw.size()));
+    std::memcpy(out.data() + kCompressionHeaderSize, payload.data(), payload.size());
+    return out;
+}
+
+}  // namespace
+
+std::vector<uint8_t> apply_envelopes(std::vector<uint8_t> out, const EncodeOptions& options) {
+    if (options.compress) out = maybe_compress(std::move(out), options);
+    if (!options.hmac_key.empty()) out = Security(options.hmac_key).wrap(out);
+    return out;
+}
+
+std::vector<uint8_t> encode(const Value& value, const EncodeOptions& options) {
+    Encoder encoder(options);
+    encoder.encode(value);
+    return apply_envelopes(encoder.release(), options);
+}
+
+Value decode(std::span<const uint8_t> data, const DecodeOptions& options) {
+    std::span<const uint8_t> bytes = data;
+    std::optional<Security> security;
+    if (!options.hmac_key.empty()) {
+        security.emplace(options.hmac_key);
+        bytes = security->unwrap(bytes);
+    } else if (Security::is_signed_envelope(bytes) && bytes.size() >= Security::kEnvelopeHeaderSize) {
+        fail(ErrorCode::authentication_failed, "input is signed but no HMAC key was provided");
+    }
+
+    std::vector<uint8_t> decompressed;
+    if (is_compressed_envelope(bytes) && bytes.size() >= kCompressionHeaderSize) {
+        if (!options.auto_decompress) {
+            fail(ErrorCode::invalid_envelope, "input is compressed but auto_decompress is disabled");
+        }
+        const uint8_t* h = bytes.data();
+        const uint8_t version = h[4];
+        const auto algo = static_cast<CompressionAlgorithm>(h[5]);
+        const uint16_t reserved = load_be16(h + 6);
+        const uint32_t compressed_size = load_be32(h + 8);
+        const uint32_t uncompressed_size = load_be32(h + 12);
+        if (version != kCompressionVersion) fail(ErrorCode::invalid_envelope, "unsupported compression envelope version");
+        if (reserved != 0) fail(ErrorCode::invalid_envelope, "compression envelope reserved bytes must be zero");
+        if (compressed_size != bytes.size() - kCompressionHeaderSize) {
+            fail(ErrorCode::invalid_envelope, "compressed size does not match the envelope length");
+        }
+        if (uncompressed_size > options.max_decompressed_size) {
+            fail(ErrorCode::size_limit, "declared uncompressed size exceeds max_decompressed_size");
+        }
+        if (h[5] > static_cast<uint8_t>(CompressionAlgorithm::SNAPPY)) {
+            fail(ErrorCode::unsupported_compression, "unknown compression algorithm id " + std::to_string(h[5]));
+        }
+        decompressed = decompress(algo, bytes.subspan(kCompressionHeaderSize), uncompressed_size);
+        bytes = decompressed;
+    }
+
+    Decoder decoder(options);
+    return decoder.decode(bytes);
+}
+
+bool is_tabular(const Array& arr) { return tabular_layout(arr, nullptr); }
+
+const char* version() { return BTOON_VERSION_STRING; }
+
+const char* spec_version() { return BTOON_SPEC_VERSION; }
+
+// --- Value -------------------------------------------------------------------
 
 const char* Value::type_name() const {
-    return std::visit([](auto&& arg) -> const char* {
-        using T = std::decay_t<decltype(arg)>;
-        if constexpr (std::is_same_v<T, Nil>) return "nil";
-        else if constexpr (std::is_same_v<T, Bool>) return "bool";
-        else if constexpr (std::is_same_v<T, Int>) return "int";
-        else if constexpr (std::is_same_v<T, Uint>) return "uint";
-        else if constexpr (std::is_same_v<T, Float>) return "float";
-        else if constexpr (std::is_same_v<T, String>) return "string";
-        else if constexpr (std::is_same_v<T, Binary>) return "binary";
-        else if constexpr (std::is_same_v<T, Array>) return "array";
-        else if constexpr (std::is_same_v<T, Map>) return "map";
-        else if constexpr (std::is_same_v<T, Extension>) return "extension";
-        else if constexpr (std::is_same_v<T, Timestamp>) return "timestamp";
-        else if constexpr (std::is_same_v<T, Date>) return "date";
-        else if constexpr (std::is_same_v<T, DateTime>) return "datetime";
-        else if constexpr (std::is_same_v<T, BigInt>) return "bigint";
-        else if constexpr (std::is_same_v<T, VectorFloat>) return "vector_float";
-        else if constexpr (std::is_same_v<T, VectorDouble>) return "vector_double";
-        else return "unknown";
-    }, *this);
+    static constexpr const char* kNames[] = {
+        "nil",       "bool",   "int",  "uint",     "float",  "string",       "binary",       "array",
+        "map",       "extension", "timestamp", "date", "datetime", "bigint", "vector_float", "vector_double"};
+    static_assert(std::size(kNames) == std::variant_size_v<Value::variant>);
+    return kNames[index()];
 }
 
-std::vector<uint8_t> encode(const Value& value, const btoon::EncodeOptions& options) {
-    Encoder encoder;
-    encoder.setOptions(options);
-    encoder.encode(value);
-    auto encoded_data = encoder.getBuffer();
-    std::vector<uint8_t> result(encoded_data.begin(), encoded_data.end());
-
-    if (options.compress) {
-        // Skip compression for small data
-        if (result.size() < options.min_compression_size) {
-            return result;
-        }
-        
-        std::vector<uint8_t> compressed;
-        
-        if (options.use_profile) {
-            // Use compression profile
-            compressed = compress(options.compression_profile, result);
-        } else if (options.adaptive_compression) {
-            // Auto-select best algorithm
-            CompressionAlgorithm algo = select_best_algorithm(result, 
-                options.compression_level <= 2 || options.compression_preset == CompressionLevel::FAST);
-            
-            if (algo != CompressionAlgorithm::NONE) {
-                int level = options.compression_level;
-                if (level == 0 && options.compression_preset != CompressionLevel::CUSTOM) {
-                    level = get_numeric_level(algo, options.compression_preset);
-                }
-                compressed = compress(algo, result, level);
-            } else {
-                return result; // No compression beneficial
-            }
-        } else {
-            // Use specified algorithm and level
-            CompressionAlgorithm algo = options.compression_algorithm;
-            if (algo == CompressionAlgorithm::NONE) {
-                return result;
-            }
-            
-            int level = options.compression_level;
-            if (level == 0 && options.compression_preset != CompressionLevel::CUSTOM) {
-                level = get_numeric_level(algo, options.compression_preset);
-            }
-            
-            compressed = compress(algo, result, level);
-        }
-        
-        // Only use compressed if it's actually smaller
-        if (compressed.size() < static_cast<size_t>(result.size() * 0.95)) { // 5% threshold
-            // Add compression header
-            CompressionHeader header;
-            header.magic = htonl(BTOON_MAGIC);
-            header.version = 1;
-            
-            // Store the actual algorithm used (not the original which might be AUTO)
-            if (options.adaptive_compression) {
-                CompressionAlgorithm actual_algo = select_best_algorithm(result, 
-                    options.compression_level <= 2 || options.compression_preset == CompressionLevel::FAST);
-                header.algorithm = static_cast<uint8_t>(actual_algo);
-            } else if (options.use_profile && options.compression_profile.algorithm == CompressionAlgorithm::AUTO) {
-                CompressionAlgorithm actual_algo = select_best_algorithm(result, options.compression_profile.numeric_level <= 3);
-                header.algorithm = static_cast<uint8_t>(actual_algo);
-            } else if (options.use_profile) {
-                header.algorithm = static_cast<uint8_t>(options.compression_profile.algorithm);
-            } else {
-                header.algorithm = static_cast<uint8_t>(options.compression_algorithm);
-            }
-            
-            header.reserved = 0;
-            header.compressed_size = htonl(compressed.size());
-            header.uncompressed_size = htonl(result.size());
-            
-            std::vector<uint8_t> final_result;
-            final_result.reserve(sizeof(header) + compressed.size());
-            final_result.insert(final_result.end(), 
-                reinterpret_cast<uint8_t*>(&header),
-                reinterpret_cast<uint8_t*>(&header) + sizeof(header));
-            final_result.insert(final_result.end(), compressed.begin(), compressed.end());
-            
-            return final_result;
-        }
+std::optional<int64_t> Value::as_int64() const noexcept {
+    if (auto i = std::get_if<Int>(this)) return *i;
+    if (auto u = std::get_if<Uint>(this)) {
+        if (*u <= static_cast<uint64_t>(INT64_MAX)) return static_cast<int64_t>(*u);
     }
-
-    return result;
+    return std::nullopt;
 }
 
-Value decode(std::span<const uint8_t> data, const btoon::DecodeOptions& options) {
-    std::span<const uint8_t> actual_data = data;
-    std::vector<uint8_t> decompressed;
-    
-    if (options.auto_decompress && data.size() >= sizeof(CompressionHeader)) {
-        // Check for compression header
-        CompressionHeader header;
-        std::memcpy(&header, data.data(), sizeof(header));
-        header.magic = ntohl(header.magic);
-        
-        if (header.magic == BTOON_MAGIC) {
-            header.compressed_size = ntohl(header.compressed_size);
-            header.uncompressed_size = ntohl(header.uncompressed_size);
-            
-            // Validate header
-            if (header.version == 1 && 
-                header.compressed_size + sizeof(header) <= data.size()) {
-                
-                auto compressed_data = data.subspan(sizeof(header), header.compressed_size);
-                CompressionAlgorithm algo = static_cast<CompressionAlgorithm>(header.algorithm);
-                
-                try {
-                    decompressed = decompress(algo, compressed_data);
-                    
-                    // Validate decompressed size
-                    if (decompressed.size() != header.uncompressed_size) {
-                        throw BtoonException("Decompressed size mismatch");
-                    }
-                    
-                    actual_data = decompressed;
-                } catch (const std::exception& e) {
-                    if (options.strict) {
-                        throw;
-                    }
-                    // Fall back to treating as uncompressed if not strict
-                }
-            }
-        }
+std::optional<uint64_t> Value::as_uint64() const noexcept {
+    if (auto u = std::get_if<Uint>(this)) return *u;
+    if (auto i = std::get_if<Int>(this)) {
+        if (*i >= 0) return static_cast<uint64_t>(*i);
     }
-
-    Decoder decoder;
-    return decoder.decode(actual_data);
+    return std::nullopt;
 }
 
-bool is_tabular(const Array& arr) {
-    if (arr.size() < 2) {
-        return false;
-    }
-
-    const auto* first_row = std::get_if<Map>(&arr[0]);
-    if (!first_row) {
-        return false;
-    }
-
-    std::vector<std::string> column_names;
-    for (const auto& [key, _] : *first_row) {
-        column_names.push_back(key);
-    }
-    std::sort(column_names.begin(), column_names.end());
-
-    for (size_t i = 1; i < arr.size(); ++i) {
-        const auto* row = std::get_if<Map>(&arr[i]);
-        if (!row || row->size() != column_names.size()) {
-            return false;
-        }
-        std::vector<std::string> row_keys;
-        for (const auto& [key, _] : *row) {
-            row_keys.push_back(key);
-        }
-        std::sort(row_keys.begin(), row_keys.end());
-        if (row_keys != column_names) {
-            return false;
-        }
-    }
-    return true;
+std::optional<double> Value::as_double() const noexcept {
+    if (auto f = std::get_if<Float>(this)) return *f;
+    if (auto i = std::get_if<Int>(this)) return static_cast<double>(*i);
+    if (auto u = std::get_if<Uint>(this)) return static_cast<double>(*u);
+    return std::nullopt;
 }
 
-const char* version() {
-    return "0.0.1";
-}
+// --- Timestamp -----------------------------------------------------------------
 
-// Timestamp implementations
 Timestamp Timestamp::now() {
     using namespace std::chrono;
-    
-    auto now = system_clock::now();
-    auto duration = now.time_since_epoch();
-    
-    auto seconds = duration_cast<std::chrono::seconds>(duration);
-    auto nanoseconds = duration_cast<std::chrono::nanoseconds>(duration - seconds);
-    
-    return Timestamp(seconds.count(), static_cast<uint32_t>(nanoseconds.count()));
+    int64_t ns = duration_cast<std::chrono::nanoseconds>(system_clock::now().time_since_epoch()).count();
+    int64_t sec = ns / 1000000000LL;
+    int64_t rem = ns % 1000000000LL;
+    if (rem < 0) {
+        rem += 1000000000LL;
+        --sec;
+    }
+    return Timestamp(sec, static_cast<uint32_t>(rem));
 }
 
 Timestamp Timestamp::from_microseconds(int64_t micros) {
+    // Floor division so that negative instants keep 0 <= nanoseconds < 1e9.
     int64_t sec = micros / 1000000;
-    uint32_t nano = static_cast<uint32_t>((micros % 1000000) * 1000);
-    return Timestamp(sec, nano);
+    int64_t rem = micros % 1000000;
+    if (rem < 0) {
+        rem += 1000000;
+        --sec;
+    }
+    return Timestamp(sec, static_cast<uint32_t>(rem * 1000));
 }
 
 Timestamp Timestamp::from_milliseconds(int64_t millis) {
     int64_t sec = millis / 1000;
-    uint32_t nano = static_cast<uint32_t>((millis % 1000) * 1000000);
-    return Timestamp(sec, nano);
+    int64_t rem = millis % 1000;
+    if (rem < 0) {
+        rem += 1000;
+        --sec;
+    }
+    return Timestamp(sec, static_cast<uint32_t>(rem * 1000000));
 }
 
 } // namespace btoon

@@ -1,12 +1,4 @@
-//  ██████╗ ████████╗ ██████╗  ██████╗ ███╗   ██╗
-//  ██╔══██╗╚══██╔══╝██╔═══██╗██╔═══██╗████╗  ██║
-//  ██████╔╝   ██║   ██║   ██║██║   ██║██╔██╗ ██║
-//  ██╔══██╗   ██║   ██║   ██║██║   ██║██║╚██╗██║
-//  ██████╔╝   ██║   ╚██████╔╝╚██████╔╝██║ ╚████║
-//  ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝
-//
 //  BTOON Core
-//  Version 0.0.1
 //  https://btoon.net & https://github.com/BTOON-project/btoon-core
 //
 // SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
@@ -105,18 +97,30 @@ std::vector<uint8_t> compress(CompressionAlgorithm algorithm, std::span<const ui
 std::vector<uint8_t> compress(const CompressionProfile& profile, std::span<const uint8_t> data);
 
 /**
- * @brief Decompresses data using the specified algorithm.
+ * @brief Decompresses a payload whose decompressed size is known exactly.
  *
- * @param algorithm The compression algorithm to use.
- * @param compressed_data The compressed binary data.
- * @return A vector of bytes representing the decompressed data.
+ * This is what the compression envelope uses (docs/SPEC.md §6). Output never
+ * exceeds `expected_size`; a payload that would produce more or less fails
+ * with ErrorCode::invalid_envelope.
+ */
+std::vector<uint8_t> decompress(CompressionAlgorithm algorithm, std::span<const uint8_t> compressed_data,
+                                size_t expected_size);
+
+/**
+ * @brief Decompresses data of unknown decompressed size, up to `max_size` bytes.
+ *
+ * LZ4 block payloads don't record their size and require the overload above.
+ * @throws BtoonException with ErrorCode::size_limit if output exceeds max_size.
  */
 std::vector<uint8_t> decompress(CompressionAlgorithm algorithm, std::span<const uint8_t> compressed_data);
+std::vector<uint8_t> decompress_bounded(CompressionAlgorithm algorithm, std::span<const uint8_t> compressed_data,
+                                        size_t max_size);
 
-// --- Algorithm-specific implementations ---
+/// True if this build of the library supports `algorithm` (ZLIB always is).
+bool compression_available(CompressionAlgorithm algorithm) noexcept;
 
-std::vector<uint8_t> compress_zlib(std::span<const uint8_t> data, int level);
-std::vector<uint8_t> decompress_zlib(std::span<const uint8_t> compressed_data);
+/// Spec name of an algorithm ("zlib", "lz4", "zstd", "brotli", "snappy").
+const char* compression_algorithm_name(CompressionAlgorithm algorithm) noexcept;
 
 // --- Helper functions ---
 
@@ -135,25 +139,6 @@ CompressionAlgorithm select_best_algorithm(std::span<const uint8_t> data, bool p
  */
 float estimate_compression_ratio(CompressionAlgorithm algo, std::span<const uint8_t> data);
 
-#ifdef BTOON_WITH_LZ4
-std::vector<uint8_t> compress_lz4(std::span<const uint8_t> data, int level);
-std::vector<uint8_t> decompress_lz4(std::span<const uint8_t> compressed_data);
-#endif
-
-#ifdef BTOON_WITH_ZSTD
-std::vector<uint8_t> compress_zstd(std::span<const uint8_t> data, int level);
-std::vector<uint8_t> decompress_zstd(std::span<const uint8_t> compressed_data);
-#endif
-
-#ifdef BTOON_WITH_BROTLI
-std::vector<uint8_t> compress_brotli(std::span<const uint8_t> data, int level);
-std::vector<uint8_t> decompress_brotli(std::span<const uint8_t> compressed_data);
-#endif
-
-#ifdef BTOON_WITH_SNAPPY
-std::vector<uint8_t> compress_snappy(std::span<const uint8_t> data);
-std::vector<uint8_t> decompress_snappy(std::span<const uint8_t> compressed_data);
-#endif
 
 } // namespace btoon
 

@@ -6,6 +6,7 @@ set -e
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 ROOT_DIR="$SCRIPT_DIR/.."
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build-release}"
+VERSION="$(sed -n 's/^#define BTOON_VERSION_STRING "\(.*\)"/\1/p' "$ROOT_DIR/include/btoon/btoon.h")"
 INSTALL_PREFIX="${INSTALL_PREFIX:-/usr/local}"
 
 # Detect platform
@@ -114,14 +115,14 @@ cp -r "$ROOT_DIR/docs" "$PACKAGE_DIR/doc/"
 
 # Create version file
 cat > "$PACKAGE_DIR/VERSION" << EOF
-BTOON Version: 0.0.1
+BTOON Version: $VERSION
 Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
 Platform: $OS-$ARCH
 Compiler: $(cmake --version | head -1)
 EOF
 
 # Create archive
-ARCHIVE_NAME="btoon-0.0.1-$OS-$ARCH"
+ARCHIVE_NAME="btoon-$VERSION-$OS-$ARCH"
 echo ""
 echo "Creating archive: $ARCHIVE_NAME.tar.gz"
 

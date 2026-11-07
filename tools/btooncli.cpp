@@ -1,153 +1,198 @@
-#include "btoon/btoon.h"
-#include "nlohmann/json.hpp"
-#include <iostream>
+// SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
+// SPDX-License-Identifier: MIT
+//
+// btoon — convert between JSON and BTOON, and inspect BTOON files.
+#include <cstring>
 #include <fstream>
-#include <vector>
+#include <iostream>
+#include <iterator>
+#include <optional>
+#include <sstream>
 #include <string>
+#include <vector>
+
+#include "btoon/btoon.h"
+#include "json_mapping.h"
+
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 using namespace btoon;
-using json = nlohmann::basic_json<std::map>;
+using btoon::tools::json;
 
-// --- Conversion Functions ---
+namespace {
 
-Value json_to_btoon(const json& j);
+void usage(std::ostream& out) {
+    out << "btoon " << version() << " (format spec " << spec_version() << ")\n\n"
+        << "Usage:\n"
+        << "  btoon encode [IN.json|-] [OUT.btoon|-] [options]   JSON -> BTOON\n"
+        << "  btoon decode [IN.btoon|-] [OUT.json|-] [options]   BTOON -> JSON\n"
+        << "  btoon info   [IN.btoon|-]                          Describe a BTOON document\n"
+        << "  btoon --version | --help\n\n"
+        << "Options:\n"
+        << "  --compress[=ALGO]    Wrap output in a compression envelope (zlib, lz4, zstd, brotli, snappy;\n"
+        << "                       default zlib). Decoding detects envelopes automatically.\n"
+        << "  --no-tabular         Don't use the columnar encoding for arrays of objects\n"
+        << "  --hmac-key-file F    Sign (encode) or verify (decode) with the key in file F\n"
+        << "  --compact            Decode to single-line JSON (default: indented)\n"
+        << "  --no-tags            Treat {\"$binary\": ...}-style objects as plain maps\n\n"
+        << "Non-JSON types are written as tagged objects, e.g. {\"$binary\": \"<base64>\"},\n"
+        << "{\"$timestamp\": \"2024-01-01T00:00:00Z\"}, {\"$bigint\": \"<decimal>\"}; see tools/json_mapping.h.\n";
+}
 
-Map json_object_to_btoon_map(const json& j) {
-    Map map;
-    for (auto& [key, val] : j.items()) {
-        map[key] = json_to_btoon(val);
+std::vector<uint8_t> read_all(const std::string& path) {
+    if (path == "-") {
+        std::cin >> std::noskipws;
+        return {std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>()};
     }
-    return map;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw std::runtime_error("cannot open " + path);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
-Array json_array_to_btoon_array(const json& j) {
-    Array arr;
-    for (auto& item : j) {
-        arr.push_back(json_to_btoon(item));
+void write_all(const std::string& path, const void* data, size_t n) {
+    if (path == "-") {
+        std::cout.write(static_cast<const char*>(data), static_cast<std::streamsize>(n));
+        std::cout.flush();
+        return;
     }
-    return arr;
+    std::ofstream out(path, std::ios::binary);
+    if (!out) throw std::runtime_error("cannot write " + path);
+    out.write(static_cast<const char*>(data), static_cast<std::streamsize>(n));
 }
 
-Value json_to_btoon(const json& j) {
-    if (j.is_null()) return Nil();
-    if (j.is_boolean()) return Bool(j.get<bool>());
-    if (j.is_number_integer()) return Int(j.get<int64_t>());
-    if (j.is_number_unsigned()) return Uint(j.get<uint64_t>());
-    if (j.is_number_float()) return Float(j.get<double>());
-    if (j.is_string()) return String(j.get<std::string>());
-    if (j.is_binary()) return Binary(j.get<std::vector<uint8_t>>());
-    if (j.is_array()) return json_array_to_btoon_array(j);
-    if (j.is_object()) return json_object_to_btoon_map(j);
-    return Nil();
+std::optional<CompressionAlgorithm> parse_algorithm(const std::string& name) {
+    if (name == "zlib") return CompressionAlgorithm::ZLIB;
+    if (name == "lz4") return CompressionAlgorithm::LZ4;
+    if (name == "zstd") return CompressionAlgorithm::ZSTD;
+    if (name == "brotli") return CompressionAlgorithm::BROTLI;
+    if (name == "snappy") return CompressionAlgorithm::SNAPPY;
+    return std::nullopt;
 }
 
-json btoon_to_json(const Value& v) {
-    return std::visit([](auto&& arg) -> json {
-        using T = std::decay_t<decltype(arg)>;
-        if constexpr (std::is_same_v<T, Nil>) return nullptr;
-        if constexpr (std::is_same_v<T, Bool>) return arg;
-        if constexpr (std::is_same_v<T, Int>) return arg;
-        if constexpr (std::is_same_v<T, Uint>) return arg;
-        if constexpr (std::is_same_v<T, Float>) return arg;
-        if constexpr (std::is_same_v<T, String>) return arg;
-        if constexpr (std::is_same_v<T, Binary>) return arg;
-        if constexpr (std::is_same_v<T, Array>) {
-            json j = json::array();
-            for (const auto& item : arg) {
-                j.push_back(btoon_to_json(item));
-            }
-            return j;
+struct Counts {
+    size_t values = 0, maps = 0, arrays = 0, max_depth = 0;
+};
+
+void count(const Value& v, size_t depth, Counts& c) {
+    ++c.values;
+    c.max_depth = std::max(c.max_depth, depth);
+    if (auto a = std::get_if<Array>(&v)) {
+        ++c.arrays;
+        for (const auto& e : *a) count(e, depth + 1, c);
+    } else if (auto m = std::get_if<Map>(&v)) {
+        ++c.maps;
+        for (const auto& [_, e] : *m) count(e, depth + 1, c);
+    }
+}
+
+int info(const std::vector<uint8_t>& bytes, const DecodeOptions& opts) {
+    std::cout << "size:        " << bytes.size() << " bytes\n";
+    std::span<const uint8_t> s(bytes);
+    if (s.size() >= 40 && std::memcmp(s.data(), "BTSG", 4) == 0) {
+        std::cout << "envelope:    signed (HMAC-SHA256)\n";
+        if (opts.hmac_key.empty()) {
+            std::cout << "             pass --hmac-key-file to verify and inspect the payload\n";
+            return 0;
         }
-        if constexpr (std::is_same_v<T, Map>) {
-            json j = json::object();
-            for (const auto& [key, val] : arg) {
-                j[key] = btoon_to_json(val);
-            }
-            return j;
-        }
-        return nullptr;
-    }, v);
-}
-
-// --- Main CLI Logic ---
-
-void printUsage(const char* name) {
-    std::cerr << "Usage: btoon [command] <input> <output> [options]" << std::endl;
-    std::cerr << "Commands:" << std::endl;
-    std::cerr << "  encode <input> <output>    Encode JSON to BTOON" << std::endl;
-    std::cerr << "  decode <input> <output>    Decode BTOON to JSON" << std::endl;
-    std::cerr << "Options:" << std::endl;
-    std::cerr << "  --compress    Enable compression (default: zlib)" << std::endl;
-    std::cerr << "  --version     Print version information" << std::endl;
-    std::cerr << "  --help        Print this usage information" << std::endl;
-}
-
-int main(int argc, char** argv) {
-    if (argc < 2) {
-        printUsage(argv[0]);
-        return 1;
+        s = s.subspan(40);
     }
-
-    std::string command = argv[1];
-
-    if (command == "--version" || command == "-v") {
-        std::cout << "btoon version " << btoon::version() << std::endl;
-        return 0;
+    if (s.size() >= 16 && std::memcmp(s.data(), "BTON", 4) == 0) {
+        auto u32 = [&](size_t o) { return (uint32_t(s[o]) << 24) | (uint32_t(s[o + 1]) << 16) | (uint32_t(s[o + 2]) << 8) | s[o + 3]; };
+        std::cout << "envelope:    compressed with " << compression_algorithm_name(static_cast<CompressionAlgorithm>(s[5]))
+                  << ", " << u32(8) << " -> " << u32(12) << " bytes ("
+                  << (u32(12) ? 100.0 * u32(8) / u32(12) : 0.0) << "%)\n";
     }
-
-    if (command == "--help" || command == "-h") {
-        printUsage(argv[0]);
-        return 0;
-    }
-
-    if (argc < 4) {
-        printUsage(argv[0]);
-        return 1;
-    }
-
-    std::string input_file = argv[2];
-    std::string output_file = argv[3];
-    bool compress = (argc > 4 && std::string(argv[4]) == "--compress");
-
-    try {
-        if (command == "encode") {
-            std::ifstream ifs(input_file);
-            json j = json::parse(ifs);
-            Value v = json_to_btoon(j);
-            
-            EncodeOptions opts;
-            opts.compress = compress;
-            
-            auto encoded = encode(v, opts);
-            
-            std::ofstream ofs(output_file, std::ios::binary);
-            ofs.write((const char*)encoded.data(), static_cast<std::streamsize>(encoded.size()));
-            
-            std::cout << "Encoded " << input_file << " to " << output_file << std::endl;
-
-        } else if (command == "decode") {
-            std::ifstream ifs(input_file, std::ios::binary);
-            std::vector<uint8_t> buffer((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-            
-            DecodeOptions opts;
-            opts.auto_decompress = compress; // Use same flag for simplicity
-            
-            Value v = decode(buffer, opts);
-            json j = btoon_to_json(v);
-            
-            std::ofstream ofs(output_file);
-            ofs << j.dump(2);
-
-            std::cout << "Decoded " << input_file << " to " << output_file << std::endl;
-        } else {
-            printUsage(argv[0]);
-            return 1;
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
-        return 1;
-    }
-
+    Value v = decode(bytes, opts);
+    Counts c;
+    count(v, 0, c);
+    std::string as_json = tools::to_json(v).dump();
+    std::cout << "top level:   " << v.type_name() << "\n"
+              << "values:      " << c.values << " (" << c.maps << " maps, " << c.arrays << " arrays), max depth "
+              << c.max_depth << "\n"
+              << "as JSON:     " << as_json.size() << " bytes (BTOON is " << (100.0 * bytes.size() / as_json.size())
+              << "% of that)\n";
     return 0;
 }
 
+}  // namespace
+
+int main(int argc, char** argv) {
+#ifdef _WIN32
+    // Binary data flows through stdin/stdout; stop Windows from translating newlines.
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
+    std::vector<std::string> args(argv + 1, argv + argc);
+    if (args.empty()) {
+        usage(std::cerr);
+        return 2;
+    }
+    const std::string cmd = args[0];
+    if (cmd == "--version" || cmd == "-v") {
+        std::cout << "btoon " << version() << " (format spec " << spec_version() << ")\n";
+        return 0;
+    }
+    if (cmd == "--help" || cmd == "-h" || cmd == "help") {
+        usage(std::cout);
+        return 0;
+    }
+
+    EncodeOptions eopts;
+    DecodeOptions dopts;
+    bool compact = false, tags = true;
+    std::vector<std::string> paths;
+    try {
+        for (size_t i = 1; i < args.size(); ++i) {
+            const std::string& a = args[i];
+            if (a == "--compress") {
+                eopts.compress = true;
+            } else if (a.rfind("--compress=", 0) == 0) {
+                auto algo = parse_algorithm(a.substr(11));
+                if (!algo) throw std::runtime_error("unknown compression algorithm: " + a.substr(11));
+                eopts.compress = true;
+                eopts.compression_algorithm = *algo;
+            } else if (a == "--no-tabular") {
+                eopts.auto_tabular = false;
+            } else if (a == "--compact") {
+                compact = true;
+            } else if (a == "--no-tags") {
+                tags = false;
+            } else if (a == "--hmac-key-file" && i + 1 < args.size()) {
+                auto key = read_all(args[++i]);
+                eopts.hmac_key.assign(key.begin(), key.end());
+                dopts.hmac_key = eopts.hmac_key;
+            } else if (a.size() > 1 && a[0] == '-' && a != "-") {
+                throw std::runtime_error("unknown option: " + a);
+            } else {
+                paths.push_back(a);
+            }
+        }
+        while (paths.size() < 2) paths.push_back("-");
+
+        if (cmd == "encode") {
+            auto text = read_all(paths[0]);
+            json j = json::parse(text.begin(), text.end());
+            auto out = encode(tools::from_json(j, tags), eopts);
+            write_all(paths[1], out.data(), out.size());
+        } else if (cmd == "decode") {
+            auto bytes = read_all(paths[0]);
+            std::string text = tools::to_json(decode(bytes, dopts)).dump(compact ? -1 : 2) + "\n";
+            write_all(paths[1], text.data(), text.size());
+        } else if (cmd == "info") {
+            return info(read_all(paths[0]), dopts);
+        } else {
+            usage(std::cerr);
+            return 2;
+        }
+    } catch (const BtoonException& e) {
+        std::cerr << "btoon: " << e.code_name() << ": " << e.what() << "\n";
+        return 1;
+    } catch (const std::exception& e) {
+        std::cerr << "btoon: " << e.what() << "\n";
+        return 1;
+    }
+    return 0;
+}

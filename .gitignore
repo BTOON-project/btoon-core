@@ -144,3 +144,11 @@ docs/api/
 
 # Snyk Security Extension - AI Rules (auto-generated)
 .cursor/rules/snyk_rules.mdc
+
+# Fuzzing (generated)
+fuzz/corpus/
+fuzz/work/
+crash-*
+leak-*
+timeout-*
+oom-*

@@ -1,354 +1,154 @@
-# BTOON Core - Binary Tree Object Notation
+# BTOON Core
 
-<div align="center">
+**BTOON** ("Binary TOON") is a compact binary serialization format: **MessagePack plus a
+columnar encoding for arrays of uniform objects**. Keys are written once per table instead
+of once per row, which typically makes record-shaped data 40–50% smaller than plain
+MessagePack before any compression.
 
-![Version](https://img.shields.io/badge/version-0.0.1--pre-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![C++ Standard](https://img.shields.io/badge/C%2B%2B-20-brightgreen)
-![Build Status](https://img.shields.io/badge/build-passing-success)
-![Coverage](https://img.shields.io/badge/coverage-95%25-brightgreen)
+This repository holds the **format specification**, the **conformance test vectors**, and
+the **reference C++20 implementation** (library + `btoon` CLI).
 
-**High-Performance Binary Serialization Format**
+- Spec: [docs/SPEC.md](docs/SPEC.md) (version 0.1)
+- Vectors: [tests/vectors/btoon-vectors.json](tests/vectors/btoon-vectors.json) (260 cases)
+- Language libraries: [Python](https://github.com/BTOON-project/btoon-python) ·
+  [Node.js](https://github.com/BTOON-project/btoon-nodejs) ·
+  [JavaScript (browser)](https://github.com/BTOON-project/btoon-javascript) ·
+  [Go](https://github.com/BTOON-project/btoon-go) · [PHP](https://github.com/BTOON-project/btoon-php)
 
-[Documentation](docs/) • [Specification](docs/btoon-spec.md) • [Benchmarks](#performance) • [Examples](examples/)
+## What you get
 
-</div>
+- **MessagePack-compatible.** Every BTOON document is valid MessagePack. With tabular
+  encoding turned off, the output is byte-for-byte what a canonical MessagePack encoder
+  writes.
+- **Tabular encoding.** Arrays of maps that share the same keys are stored column by
+  column, but only when that is actually smaller (a fixed size rule, SPEC §5.6.2).
+- **Canonical.** One value has one encoding: smallest integers, float64, keys sorted by
+  UTF-8 bytes. Every BTOON library produces identical bytes, which the conformance vectors
+  check.
+- **Extra types.** MessagePack timestamps (plus an optional UTC offset), date, datetime,
+  arbitrary-precision integers, and float32/float64 vectors for embeddings.
+- **Envelopes.** Optional compression (zlib built in; LZ4, Zstandard, Brotli and Snappy
+  when built with them) and HMAC-SHA256 signing.
+- **Hardened decoder.** Bounds-checked, depth-limited, allocation-guarded, strict UTF-8,
+  and decompression-bomb safe. It is fuzzed with libFuzzer, and the tests run under
+  AddressSanitizer and UndefinedBehaviorSanitizer.
 
-## 🚀 Features
+## Size
 
-### Core Serialization
-- **Compact Binary Format**: Efficient encoding with minimal overhead
-- **Rich Type System**: Native support for all common data types
-- **Tabular Data Optimization**: Columnar encoding for structured data
-- **Streaming Support**: Process large datasets without loading into memory
-- **Zero-Copy APIs**: Minimize memory allocations and copies
+200 user records (`id`, `name`, `email`, `score`, `active`) plus a small `meta` object:
 
-### Advanced Compression
-- **Multiple Algorithms**: ZLIB, LZ4, ZSTD, Brotli, Snappy
-- **Adaptive Compression**: Automatically selects optimal algorithm
-- **Compression Profiles**: Preconfigured for different use cases
-- **Delta & RLE Codecs**: Specialized compression for time-series
+| Encoding | Bytes | vs JSON |
+|---|---:|---:|
+| JSON (minified) | 16,345 | 100% |
+| MessagePack | 12,686 | 77.6% |
+| **BTOON** | **7,166** | **43.8%** |
+| JSON + zlib | 2,228 | 13.6% |
+| **BTOON + zlib** | **1,845** | **11.3%** |
 
-### Data Types & Structures
-- **Extended Timestamps**: Nanosecond precision with timezone support
-- **Decimal Type**: Arbitrary precision for financial calculations
-- **Graph Structures**: Nodes, edges, and graph algorithms
-- **Time-Series**: Optimized storage and analysis for temporal data
+The gain comes from not repeating keys, so it grows with the number of rows and the length
+of the key names. Data that isn't tabular encodes exactly like MessagePack.
 
-### Schema Management
-- **Schema Versioning**: Track and manage schema evolution
-- **Forward/Backward Compatibility**: Seamless upgrades
-- **Schema Inference**: Automatically derive schemas from data
-- **GraphQL Integration**: Convert between BTOON and GraphQL schemas
-- **JSON Schema Support**: Full compatibility with JSON Schema standards
+## Speed
 
-### Performance Optimizations
-- **SIMD Acceleration**: AVX2, SSE2, ARM NEON support
-- **Memory Pooling**: Reusable memory allocations
-- **Batch Processing**: Parallel processing with worker threads
-- **Memory-Mapped Files**: Efficient large file handling
+`btoon_bench` with 10,000 records, Release build, Apple M4 Max. Best of 7 runs:
 
-### Developer Tools
-- **btoon-schema**: Schema compiler and code generator
-- **btoon-convert**: Universal format converter
-- **Validation & Security**: Input validation and fuzz testing
-- **Cross-Language Support**: Python, JavaScript, Go, PHP bindings
+| Case | Size | Encode | Decode |
+|---|---:|---:|---:|
+| records, tabular | 447 KB | 0.60 ms (741 MB/s) | 1.54 ms (291 MB/s) |
+| records, plain | 767 KB | 0.69 ms (1.1 GB/s) | 2.05 ms (374 MB/s) |
+| nested, mixed | 814 KB | 0.86 ms (943 MB/s) | 2.16 ms (378 MB/s) |
 
-## 📦 Installation
+Decoding builds a full `btoon::Value` tree (`std::map`/`std::string`), and that is where
+most of its time goes. Reproduce with
+`cmake -B build -DBUILD_BENCHMARKS=ON && cmake --build build && build/btoon_bench`.
 
-### Pre-built Binaries
+## Build
 
-#### Using the installer script
+Requirements: a C++20 compiler (Clang 14+, GCC 11+, MSVC 2022), CMake 3.20+, zlib.
+OpenSSL is **not** required: SHA-256 and HMAC are built in.
+
 ```bash
-curl -sSL https://raw.githubusercontent.com/BTOON-project/btoon-core/main/scripts/install.sh | bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build              # unit tests + conformance vectors + fuzz smoke test
+cmake --install build               # library, headers, CMake package, btoon CLI
 ```
 
-#### Package Managers
+| Option | Default | |
+|---|---|---|
+| `BTOON_WITH_LZ4` / `_ZSTD` / `_BROTLI` / `_SNAPPY` | OFF | Optional codecs (found via pkg-config or CMake configs) |
+| `ENABLE_SANITIZERS` | OFF | ASan + UBSan for everything, including the library |
+| `BUILD_FUZZ_TESTS` | OFF | libFuzzer target `fuzz_decoder` (Clang) |
+| `BUILD_BENCHMARKS` | OFF | `btoon_bench` |
+| `BTOON_NATIVE_ARCH` | OFF | `-march=native`. Never for binaries you distribute. |
 
-**Python:**
-```bash
-pip install btoon==0.0.1
+Use it from CMake:
+
+```cmake
+find_package(btoon 0.1 REQUIRED)            # after install
+target_link_libraries(app PRIVATE btoon::btoon_core)
+# or: add_subdirectory(btoon-core) — tests/tools are skipped when not top-level
 ```
 
-**Node.js:**
-```bash
-npm install btoon@0.0.1
-```
+## C++ quick start
 
-**Docker:**
-```bash
-docker pull btoon/btoon:0.0.1
-```
-
-### Building from Source
-
-#### Requirements
-- C++20 compatible compiler (GCC 10+, Clang 12+, MSVC 2019+)
-- CMake 3.16+
-- zlib (required)
-- Optional: lz4, zstd, brotli, snappy
-
-#### Build Instructions
-```bash
-git clone https://github.com/BTOON-project/btoon-core.git
-cd btoon-core
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-sudo make install
-```
-
-## 🎯 Quick Start
-
-### C++ Example
 ```cpp
 #include <btoon/btoon.h>
-#include <iostream>
+
+using namespace btoon;
 
 int main() {
-    using namespace btoon;
-    
-    // Create complex data structure
-    Map data{
-        {"name", String("Alice")},
-        {"age", Int(30)},
-        {"balance", Decimal("1234.56")},
-        {"timestamp", Timestamp::now()},
-        {"tags", Array{String("developer"), String("btoon")}}
-    };
-    
-    // Encode with compression
-    auto encoded = encode(data, {
-        .compress = true,
-        .compression_algorithm = CompressionAlgorithm::ZSTD
-    });
-    
-    // Decode
-    auto decoded = decode(encoded);
-    
-    std::cout << "Encoded size: " << encoded.size() << " bytes\n";
-    return 0;
-}
-```
-
-### Python Example
-```python
-import btoon
-from datetime import datetime
-from decimal import Decimal
-
-# Create data with Python types
-data = {
-    "user": "Alice",
-    "balance": Decimal("1234.56"),
-    "timestamp": datetime.now(),
-    "transactions": [
-        {"amount": 100.50, "currency": "USD"},
-        {"amount": 200.75, "currency": "EUR"}
-    ]
-}
-
-# Encode with compression
-encoded = btoon.encode(data, compression=btoon.CompressionAlgorithm.LZ4)
-
-# Decode
-decoded = btoon.decode(encoded)
-
-# Work with DataFrames
-import pandas as pd
-df = pd.DataFrame(data["transactions"])
-btoon_data = btoon.from_dataframe(df, use_tabular=True)
-```
-
-### Schema Example
-```cpp
-// Define schema
-auto schema = SchemaBuilder()
-    .name("UserProfile")
-    .version("1.0.0")
-    .field("id", "integer", required=true)
-    .field("email", "string", pattern=R"(^[^@]+@[^@]+$)")
-    .field("balance", "decimal", precision=2)
-    .field("created_at", "timestamp")
-    .build();
-
-// Validate data
-Validator validator(schema);
-auto result = validator.validate(data);
-if (!result.valid) {
-    for (const auto& error : result.errors) {
-        std::cerr << "Validation error: " << error << "\n";
+    Array users;
+    for (int i = 0; i < 100; ++i) {
+        users.push_back(Map{{"id", Int(i)}, {"name", String("user" + std::to_string(i))}});
     }
+    Value doc = Map{{"users", users}, {"created", Timestamp::now()}};
+
+    std::vector<uint8_t> bytes = encode(doc);                    // tabular kicks in automatically
+    std::vector<uint8_t> packed = encode(doc, {.compress = true}); // zlib envelope
+
+    Value back = decode(packed);                                 // envelopes are detected
+    return back == doc ? 0 : 1;
 }
 ```
 
-### Time-Series Example
-```cpp
-using namespace btoon::timeseries;
+Errors are thrown as `btoon::BtoonException`. `e.code()` returns an `ErrorCode` that
+matches the spec's error names (`truncated`, `max_depth`, `invalid_utf8`, …). See
+[docs/API.md](docs/API.md) for the full API, including incremental encoding, streams,
+signing, schemas, and the C API.
 
-// Create time-series
-TimeSeries<double> prices;
-prices.append(Timestamp::now(), 100.50);
-prices.append(Timestamp::now(), 101.25);
-prices.append(Timestamp::now(), 99.75);
-
-// Analyze
-auto ma = prices.moving_average(10);
-auto change = prices.pct_change();
-auto outliers = prices.detect_outliers_zscore(3.0);
-
-// Compress for storage
-auto compressed = prices.compress(TimeSeriesCompression::GORILLA);
-```
-
-## 🔧 Advanced Features
-
-### Graph Processing
-```cpp
-using namespace btoon::graph;
-
-// Create graph
-Graph<std::string> network;
-network.add_node("A");
-network.add_node("B");
-network.add_edge("A", "B", 1.5);
-
-// Run algorithms
-auto shortest = network.dijkstra("A");
-auto components = network.connected_components();
-auto pagerank = GraphMetrics::pagerank(network);
-```
-
-### Batch Processing
-```cpp
-using namespace btoon::batch;
-
-// Setup parallel processor
-ParallelBatchProcessor<Input, Output> processor(
-    [](const Input& in) { return process(in); },
-    {.worker_threads = 8, .batch_size = 1000}
-);
-
-// Process data in parallel
-auto results = processor.process(large_dataset);
-```
-
-### JSON Schema Integration
-```cpp
-using namespace btoon::json_schema;
-
-// Convert BTOON schema to JSON Schema
-BtoonToJsonSchema converter;
-auto json_schema = converter.convert(btoon_schema);
-
-// Validate with JSON Schema
-JsonSchemaValidator validator(json_schema);
-auto valid = validator.validate(data, errors);
-```
-
-## 📊 Performance
-
-Benchmarks on Intel Core i9-12900K, 32GB RAM:
-
-| Operation | BTOON | JSON | MessagePack | Protocol Buffers |
-|-----------|-------|------|-------------|------------------|
-| Encode (1MB) | 2.1ms | 18.5ms | 4.2ms | 3.8ms |
-| Decode (1MB) | 1.8ms | 21.3ms | 3.9ms | 3.5ms |
-| Size (1MB data) | 287KB | 1MB | 412KB | 378KB |
-| Tabular (10K rows) | 8.3ms | 142ms | 31ms | 26ms |
-
-### Compression Ratios
-
-| Algorithm | Compression Ratio | Speed |
-|-----------|------------------|--------|
-| LZ4 | 2.1x | 450 MB/s |
-| ZLIB | 3.8x | 85 MB/s |
-| ZSTD | 4.2x | 280 MB/s |
-| Brotli | 4.7x | 40 MB/s |
-| Snappy | 1.9x | 520 MB/s |
-
-## 🏗️ Project Structure
-
-```
-btoon-core/
-├── include/btoon/      # Public headers
-│   ├── btoon.h         # Core types
-│   ├── encoder.h       # Encoding API
-│   ├── decoder.h       # Decoding API
-│   ├── schema.h        # Schema management
-│   ├── compression.h   # Compression algorithms
-│   ├── validator.h     # Validation
-│   ├── decimal.h       # Financial types
-│   ├── graph.h         # Graph structures
-│   ├── timeseries.h    # Time-series optimization
-│   └── ...
-├── src/                # Implementation
-├── bindings/           # Language bindings
-│   ├── python/         # Python bindings
-│   └── javascript/     # JavaScript bindings
-├── tools/              # CLI tools
-│   ├── btooncli.cpp    # Main CLI
-│   ├── btoon-schema.cpp # Schema compiler
-│   └── btoon-convert.cpp # Format converter
-├── tests/              # Unit tests
-├── examples/           # Usage examples
-└── docs/               # Documentation
-```
-
-## 🌐 Language Support
-
-### Native Bindings (via C++)
-- ✅ Python (pybind11)
-- ✅ JavaScript/Node.js (WebAssembly)
-- 🚧 Rust (coming soon)
-- 🚧 Java (coming soon)
-
-### Independent Implementations
-- ✅ [btoon-go](https://github.com/BTOON-project/btoon-go) - Go implementation
-- ✅ [btoon-php](https://github.com/BTOON-project/btoon-php) - PHP implementation
-- 🚧 [btoon-rust](https://github.com/BTOON-project/btoon-rust) - Rust implementation
-
-## 📚 Documentation
-
-- [BTOON Specification](docs/btoon-spec.md) - Complete format specification
-- [Implementation Guide](docs/IMPLEMENTATION-GUIDE.md) - For library implementors
-- [Architecture](docs/ARCHITECTURE.md) - Project architecture and design
-- [API Reference](https://btoon.readthedocs.io) - Full API documentation
-- [Changelog](docs/CHANGELOG.md) - Version history
-
-## 🤝 Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+## CLI
 
 ```bash
-# Run tests
-cd build
-ctest --verbose
-
-# Run benchmarks
-./btoon_benchmark
-
-# Format code
-clang-format -i src/*.cpp include/btoon/*.h
+btoon encode data.json data.btoon --compress      # JSON -> BTOON (zlib)
+btoon decode data.btoon -                         # BTOON -> JSON on stdout
+btoon info data.btoon                             # envelope, sizes, structure
+cat data.json | btoon encode - - | btoon decode - - --compact
 ```
 
-## 📄 License
+BTOON types that JSON lacks round-trip as tagged objects, for example
+`{"$binary": "<base64>"}`, `{"$timestamp": "2024-01-01T00:00:00Z"}` and
+`{"$bigint": "…"}`. See `tools/json_mapping.h`. Also included: `btoon-convert` (JSON, CSV,
+MessagePack, XML out) and `btoon-schema` (validate, infer, diff, generate code).
 
-MIT License - See [LICENSE](LICENSE) for details.
+## Layout
 
-## 🙏 Acknowledgments
+```
+include/btoon/   public headers (btoon.h, encoder.h, decoder.h, security.h, capi.h, …)
+src/             implementation (internal.h is private)
+tests/           GoogleTest suite, vectors/ (+ generate.py oracle), fuzz_smoke.cpp, bench.cpp
+fuzz/            libFuzzer target and seed corpus
+tools/           btoon, btoon-convert, btoon-schema
+docs/            SPEC.md, API.md, IMPLEMENTATION-GUIDE.md, QUICK-REFERENCE.md, …
+experimental/    design sketches that aren't built or installed
+```
 
-- MessagePack for inspiration on binary format design
-- Facebook's Gorilla for time-series compression techniques
-- The open-source community for feedback and contributions
+## Status
 
-## 🔗 Links
+Version **0.1.0** implements spec **0.1**. The format may still change before 1.0. When it
+does, the spec, the vectors and every library change together. Changes are tracked in
+[docs/CHANGELOG.md](docs/CHANGELOG.md).
 
-- [Website](https://btoon.net)
-- [GitHub](https://github.com/BTOON-project)
+## License
 
----
-
-<div align="center">
-Made with ❤️ by the BTOON Team
-</div>
+MIT. See [LICENSE](LICENSE).

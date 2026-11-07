@@ -1,0 +1,4 @@
+# Editor support for clangd when no compile_commands.json is present.
+# (CMake also exports one: cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON)
+CompileFlags:
+  Add: [-std=c++20, -Iinclude, -Isrc]

@@ -35,11 +35,15 @@ TEST(EncoderTest, EncodeInts) {
     ASSERT_EQ(enc_neg.size(), 1);
     EXPECT_EQ(enc_neg[0], 0xf1);
     
-    // Large integer (int32)
+    // Non-negative values use the unsigned family regardless of source type (canonical, SPEC §4)
     Value v_large = Int(1000000);
     auto enc_large = encode(v_large);
     ASSERT_EQ(enc_large.size(), 5);
-    EXPECT_EQ(enc_large[0], 0xd2);
+    EXPECT_EQ(enc_large[0], 0xce);
+    EXPECT_EQ(encode(Value(Int(200))), (std::vector<uint8_t>{0xcc, 0xc8}));
+
+    // Negative values beyond fixint use the signed family
+    EXPECT_EQ(encode(Value(Int(-1000000))), (std::vector<uint8_t>{0xd2, 0xff, 0xf0, 0xbd, 0xc0}));
 }
 
 TEST(EncoderTest, EncodeString) {

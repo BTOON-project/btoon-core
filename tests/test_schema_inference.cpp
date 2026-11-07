@@ -110,7 +110,7 @@ TEST_F(SchemaInferenceTest, InferFromTabularData) {
 
 TEST_F(SchemaInferenceTest, InferOptionalFields) {
     InferenceOptions options;
-    options.required_threshold = 0.6;  // Field needs to be in 60% of samples
+    options.required_threshold = 0.8;  // Field needs to be in at least 80% of samples
     
     SchemaInferrer inferrer(options);
     Schema schema = inferrer.inferFromArray(std::get<Array>(tabular_with_optional));
@@ -125,7 +125,7 @@ TEST_F(SchemaInferenceTest, InferOptionalFields) {
     
     auto email_field = schema.getField("email");
     ASSERT_TRUE(email_field.has_value());
-    EXPECT_FALSE(email_field->required);  // Present in 60% (3/5), below threshold
+    EXPECT_FALSE(email_field->required);  // Present in 60% (3/5), below the 80% threshold
     
     auto stats = inferrer.getStatistics();
     EXPECT_EQ(stats.optional_fields, 1u);  // email is optional

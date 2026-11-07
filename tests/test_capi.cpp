@@ -1,5 +1,9 @@
 #include <gtest/gtest.h>
 #include "btoon/capi.h"
+#include "btoon/btoon.h"
+
+#include <cstring>
+#include <string>
 
 TEST(CAPITest, Version) {
     const char* version = btoon_version();
@@ -51,4 +55,21 @@ TEST(CAPITest, StringRoundTrip) {
     btoon_value_destroy(original);
     btoon_value_destroy(decoded);
     btoon_free_result(result);
+}
+
+TEST(CApiTest, ErrorsDoNotThrowAcrossTheBoundary) {
+    const uint8_t bad[] = {0x92, 0x01};  // truncated array
+    char* err = nullptr;
+    EXPECT_EQ(btoon_decode(bad, sizeof bad, nullptr, &err), nullptr);
+    ASSERT_NE(err, nullptr);
+    EXPECT_GT(std::strlen(err), 0u);
+    btoon_free_error(err);
+    // A NULL error pointer is allowed.
+    EXPECT_EQ(btoon_decode(bad, sizeof bad, nullptr, nullptr), nullptr);
+    // Encoding a NULL value reports an error instead of crashing.
+    btoon_result_t r = btoon_encode(nullptr, nullptr);
+    EXPECT_EQ(r.data, nullptr);
+    ASSERT_NE(r.error, nullptr);
+    btoon_free_result(r);
+    EXPECT_STREQ(btoon_version(), btoon::version());
 }

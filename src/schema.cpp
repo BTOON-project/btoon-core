@@ -438,27 +438,26 @@ private:
     std::unordered_map<MigrationKey, MigrationFunction, MigrationKeyHash> migrations_;
     
     bool validateType(const Value& value, const std::string& expected_type) const {
-        if (expected_type == "string") {
-            return std::holds_alternative<String>(value);
-        } else if (expected_type == "int") {
-            return std::holds_alternative<Int>(value);
-        } else if (expected_type == "uint") {
-            return std::holds_alternative<Uint>(value);
-        } else if (expected_type == "float") {
-            return std::holds_alternative<Float>(value);
-        } else if (expected_type == "bool") {
-            return std::holds_alternative<Bool>(value);
-        } else if (expected_type == "binary") {
-            return std::holds_alternative<Binary>(value);
-        } else if (expected_type == "array") {
-            return std::holds_alternative<Array>(value);
-        } else if (expected_type == "map") {
-            return std::holds_alternative<Map>(value);
-        } else if (expected_type == "nil") {
-            return std::holds_alternative<Nil>(value);
-        } else if (expected_type == "any") {
-            return true;  // Any type is valid
-        }
+        // Integers are compared by value: MessagePack doesn't distinguish Int/Uint
+        // on the wire, and decoders return Int for anything that fits (DECISIONS D4).
+        if (expected_type == "any") return true;
+        if (expected_type == "string") return std::holds_alternative<String>(value);
+        if (expected_type == "int") return value.as_int64().has_value();
+        if (expected_type == "uint") return value.as_uint64().has_value();
+        if (expected_type == "float") return std::holds_alternative<Float>(value);
+        if (expected_type == "number") return value.as_double().has_value();
+        if (expected_type == "bigint") return value.is_integer() || std::holds_alternative<BigInt>(value);
+        if (expected_type == "bool") return std::holds_alternative<Bool>(value);
+        if (expected_type == "binary") return std::holds_alternative<Binary>(value);
+        if (expected_type == "array") return std::holds_alternative<Array>(value);
+        if (expected_type == "map") return std::holds_alternative<Map>(value);
+        if (expected_type == "nil") return std::holds_alternative<Nil>(value);
+        if (expected_type == "timestamp") return std::holds_alternative<Timestamp>(value);
+        if (expected_type == "date") return std::holds_alternative<Date>(value);
+        if (expected_type == "datetime") return std::holds_alternative<DateTime>(value);
+        if (expected_type == "extension") return std::holds_alternative<Extension>(value);
+        if (expected_type == "vector_float") return std::holds_alternative<VectorFloat>(value);
+        if (expected_type == "vector_double") return std::holds_alternative<VectorDouble>(value);
         return false;
     }
     
@@ -971,13 +970,14 @@ public:
     SchemaInferrerImpl(const InferenceOptions& opts) : options(opts), stats{} {}
     
     std::string inferType(const Value& value) const {
-        return std::visit([this](auto&& arg) -> std::string {
+        return std::visit([](auto&& arg) -> std::string {
             using T = std::decay_t<decltype(arg)>;
             if constexpr (std::is_same_v<T, Nil>) return "nil";
             else if constexpr (std::is_same_v<T, Bool>) return "bool";
-            else if constexpr (std::is_same_v<T, Int>) return options.merge_numeric_types ? "number" : "int";
-            else if constexpr (std::is_same_v<T, Uint>) return options.merge_numeric_types ? "number" : "uint";
-            else if constexpr (std::is_same_v<T, Float>) return options.merge_numeric_types ? "number" : "float";
+            // Precise per-value types; mixed numeric fields are merged to "number" by the caller.
+            else if constexpr (std::is_same_v<T, Int>) return "int";
+            else if constexpr (std::is_same_v<T, Uint>) return arg <= static_cast<Uint>(INT64_MAX) ? "int" : "uint";
+            else if constexpr (std::is_same_v<T, Float>) return "float";
             else if constexpr (std::is_same_v<T, String>) return "string";
             else if constexpr (std::is_same_v<T, Binary>) return "binary";
             else if constexpr (std::is_same_v<T, Array>) return "array";
@@ -1273,10 +1273,7 @@ Schema SchemaInferrer::merge(std::vector<Schema>&& schemas, const std::string& n
                 // Merge field definitions
                 auto& existing = merged_fields[field.name];
                 
-                // Make field optional if not present in all schemas
-                if (field_count[field.name] < schemas.size()) {
-                    existing.required = false;
-                }
+                existing.required = existing.required && field.required;
                 
                 // Merge types if different
                 if (existing.type != field.type) {
@@ -1294,6 +1291,11 @@ Schema SchemaInferrer::merge(std::vector<Schema>&& schemas, const std::string& n
         }
     }
     
+    // A merged field is required only if every schema has it and requires it.
+    for (auto& [field_name, field] : merged_fields) {
+        if (field_count[field_name] < schemas.size()) field.required = false;
+    }
+
     // Build merged schema
     SchemaBuilder builder(name);
     builder.version(1, 0, 0);

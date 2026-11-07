@@ -1,116 +1,92 @@
-//  ██████╗ ████████╗ ██████╗  ██████╗ ███╗   ██╗
-//  ██╔══██╗╚══██╔══╝██╔═══██╗██╔═══██╗████╗  ██║
-//  ██████╔╝   ██║   ██║   ██║██║   ██║██╔██╗ ██║
-//  ██╔══██╗   ██║   ██║   ██║██║   ██║██║╚██╗██║
-//  ██████╔╝   ██║   ╚██████╔╝╚██████╔╝██║ ╚████║
-//  ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝
-//
 //  BTOON Core
-//  Version 0.0.1
-//  https://btoon.net //  https://btoon.net //  https://btoon.net //  https://btoon.net //  https://btoon.net & https://github.com/BTOON-project/btoon-coren// https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core
+//  https://btoon.net & https://github.com/BTOON-project/btoon-core
 //
 // SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
 // SPDX-License-Identifier: MIT
-
-
 /**
  * @file security.h
- * @brief Header file for the BTOON Security class.
- * 
- * This file defines the Security class, which provides mechanisms for ensuring
- * data integrity and safety during serialization and deserialization in the BTOON
- * library. It includes HMAC signing for integrity and type restriction for secure
- * deserialization.
+ * @brief HMAC-SHA256 signed envelopes (docs/SPEC.md §8) and type restrictions.
+ *
+ * Envelope layout: "BTSG" | u8 version=1 | u8 alg=1 | u16 reserved=0 |
+ * 32-byte HMAC-SHA256(key, header[0..8) || payload) | payload.
+ *
+ * SHA-256/HMAC are implemented in-tree (no OpenSSL dependency).
  */
 #ifndef BTOON_SECURITY_H
 #define BTOON_SECURITY_H
 
 #include "btoon.h"
+
+#include <array>
+#include <cstdint>
+#include <set>
+#include <span>
 #include <string>
 #include <vector>
-#include <set>
 
 namespace btoon {
 
-/**
- * @brief Class responsible for security features in BTOON.
- * 
- * The Security class offers methods to protect BTOON data integrity using HMAC
- * signatures and to prevent deserialization attacks by restricting allowed data
- * types. It is designed to enhance the safety of handling untrusted data.
- */
+/// SHA-256 digest of `data`.
+std::array<uint8_t, 32> sha256(std::span<const uint8_t> data);
+
+/// HMAC-SHA256(key, part1 || part2).
+std::array<uint8_t, 32> hmac_sha256(std::span<const uint8_t> key,
+                                    std::span<const uint8_t> part1,
+                                    std::span<const uint8_t> part2 = {});
+
+/// Constant-time comparison (returns false on length mismatch).
+bool constant_time_equal(std::span<const uint8_t> a, std::span<const uint8_t> b) noexcept;
+
 class Security {
 public:
-    /**
-     * @brief Default constructor for Security.
-     */
+    static constexpr size_t kEnvelopeHeaderSize = 40;  ///< magic..mac
+
     Security() = default;
-    
-    /**
-     * @brief Default destructor for Security.
-     */
-    ~Security() = default;
+    explicit Security(std::string key) : secretKey_(std::move(key)) {}
 
-    /**
-     * @brief Sets a secret key for HMAC signing.
-     * 
-     * This method sets the secret key used for generating and verifying HMAC
-     * signatures to ensure data integrity.
-     * 
-     * @param key The secret key as a string.
-     */
-    void setSecretKey(const std::string& key);
+    /// Sets the HMAC key (any bytes; ≥ 32 random bytes recommended).
+    void setSecretKey(const std::string& key) { secretKey_ = key; }
+    bool hasSecretKey() const noexcept { return !secretKey_.empty(); }
 
-    /**
-     * @brief Signs data with an HMAC for integrity protection.
-     * 
-     * This method generates an HMAC-SHA256 signature for the provided data using
-     * the set secret key.
-     * 
-     * @param data The binary data to sign.
-     * @return A vector of bytes representing the HMAC signature.
-     * @throws BtoonException if no secret key is set.
-     */
+    /// Raw HMAC-SHA256 tag of `data`. @throws BtoonException if no key is set.
     std::vector<uint8_t> sign(std::span<const uint8_t> data) const;
 
-    /**
-     * @brief Verifies an HMAC signature for data integrity.
-     * 
-     * This method checks if the provided signature matches the computed HMAC-SHA256
-     * signature for the data using the set secret key.
-     * 
-     * @param data The binary data to verify.
-     * @param signature The signature to check against.
-     * @return True if the signature is valid, false otherwise.
-     * @throws BtoonException if no secret key is set.
-     */
-    bool verify(const std::vector<uint8_t>& data, const std::vector<uint8_t>& signature) const;
+    /// Constant-time check of a raw tag produced by sign().
+    bool verify(std::span<const uint8_t> data, std::span<const uint8_t> signature) const;
+    bool verify(const std::vector<uint8_t>& data, const std::vector<uint8_t>& signature) const {
+        return verify(std::span<const uint8_t>(data), std::span<const uint8_t>(signature));
+    }
+
+    /// Wraps `payload` in a signed envelope.
+    std::vector<uint8_t> wrap(std::span<const uint8_t> payload) const;
 
     /**
-     * @brief Sets the allowed data types for deserialization.
-     * 
-     * This method defines a whitelist of data types that are permitted during
-     * deserialization. Types are identified by their index in the btoon::Value variant.
-     * 
-     * @param types A set of allowed type indices (size_t).
+     * Verifies a signed envelope and returns a view of its payload.
+     * @throws BtoonException (authentication_failed / invalid_envelope)
      */
-    void setAllowedTypes(const std::set<size_t>& types);
+    std::span<const uint8_t> unwrap(std::span<const uint8_t> envelope) const;
 
-    /**
-     * @brief Checks if a data type is allowed during deserialization.
-     * 
-     * This method determines whether a given data type index is in the whitelist of
-     * allowed types. If no restrictions are set, all types are allowed.
-     * 
-     * @param type_index The index of the type in the btoon::Value variant.
-     * @return True if the type is allowed, false otherwise.
-     */
-    bool isTypeAllowed(size_t type_index) const;
+    /// True if `data` starts with the signed-envelope magic "BTSG".
+    static bool is_signed_envelope(std::span<const uint8_t> data) noexcept;
+
+    /// Restricts decoding to the given btoon::Value variant indices (empty = all).
+    void setAllowedTypes(const std::set<size_t>& types) {
+        allowedTypes_ = types;
+        restrictTypes_ = !types.empty();
+    }
+    bool isTypeAllowed(size_t type_index) const {
+        return !restrictTypes_ || allowedTypes_.count(type_index) > 0;
+    }
+    bool restrictsTypes() const noexcept { return restrictTypes_; }
 
 private:
-    std::string secretKey_;              /**< Secret key for HMAC operations. */
-    std::set<size_t> allowedTypes_;      /**< Set of allowed type indices for deserialization. */
-    bool restrictTypes_ = false;         /**< Flag indicating if type restriction is active. */
+    std::span<const uint8_t> key_bytes() const {
+        return {reinterpret_cast<const uint8_t*>(secretKey_.data()), secretKey_.size()};
+    }
+
+    std::string secretKey_;
+    std::set<size_t> allowedTypes_;
+    bool restrictTypes_ = false;
 };
 
 } // namespace btoon

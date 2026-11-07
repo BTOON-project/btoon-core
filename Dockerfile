@@ -1,69 +1,21 @@
-# Multi-stage build for BTOON
-
-# Build stage
-FROM ubuntu:20.04 AS builder
-
-# Avoid interactive prompts during build
+# Builds the btoon CLI tools in a small image.
+#   docker build -t btoon .
+#   echo '{"a":[1,2,3]}' | docker run --rm -i btoon encode - - | docker run --rm -i btoon decode - -
+FROM ubuntu:24.04 AS build
 ENV DEBIAN_FRONTEND=noninteractive
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    cmake \
-    git \
-    ninja-build \
-    python3-dev \
-    python3-pip \
-    zlib1g-dev \
-    liblz4-dev \
-    libzstd-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build zlib1g-dev liblz4-dev libzstd-dev libbrotli-dev libsnappy-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
-
-# Copy source code
-WORKDIR /btoon
+WORKDIR /src
 COPY . .
+RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF \
+        -DBTOON_WITH_LZ4=ON -DBTOON_WITH_ZSTD=ON -DBTOON_WITH_BROTLI=ON -DBTOON_WITH_SNAPPY=ON \
+    && cmake --build build \
+    && cmake --install build --prefix /opt/btoon
 
-# Build BTOON
-RUN mkdir build && cd build && \
-    cmake .. \
-        -GNinja \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_TESTS=OFF \
-        -DBUILD_TOOLS=ON \
-        -DBUILD_SHARED_LIBS=OFF \
-    && ninja
-
-# Runtime stage
-FROM ubuntu:20.04
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    zlib1g \
-    liblz4-1 \
-    libzstd1 \
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends zlib1g liblz4-1 libzstd1 libbrotli1 libsnappy1v5 \
     && rm -rf /var/lib/apt/lists/*
-
-# Copy built binaries and libraries
-COPY --from=builder /btoon/build/btoon /usr/local/bin/
-COPY --from=builder /btoon/build/btoon-schema /usr/local/bin/
-COPY --from=builder /btoon/build/btoon-convert /usr/local/bin/
-COPY --from=builder /btoon/build/libbtoon.a /usr/local/lib/
-COPY --from=builder /btoon/include/btoon /usr/local/include/btoon
-
-# Add non-root user
-RUN useradd -m -s /bin/bash btoon
-USER btoon
-WORKDIR /home/btoon
-
-# Set up entry point
+COPY --from=build /opt/btoon/bin/ /usr/local/bin/
 ENTRYPOINT ["btoon"]
 CMD ["--help"]
-
-# Metadata
-LABEL org.opencontainers.image.title="BTOON"
-LABEL org.opencontainers.image.description="Binary Tree Object Notation - High-performance serialization format"
-LABEL org.opencontainers.image.version="0.0.1"
-LABEL org.opencontainers.image.authors="BTOON Project"
-LABEL org.opencontainers.image.url="https://github.com/BTOON-project/btoon-core"
-LABEL org.opencontainers.image.source="https://github.com/BTOON-project/btoon-core"
-LABEL org.opencontainers.image.licenses="MIT"
