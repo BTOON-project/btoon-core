@@ -260,7 +260,7 @@ TEST_F(SchemaVersioningTest, SchemaSerialization) {
     ASSERT_NE(schema_map, nullptr);
     
     EXPECT_EQ(std::get<String>(schema_map->at("name")), "user");
-    EXPECT_EQ(std::get<String>(schema_map->at("version")), "0.0.1");
+    EXPECT_EQ(std::get<String>(schema_map->at("version")), "1.0.0");  // schema_v1 is built as 1.0.0
     
     // Deserialize schema from Value
     Schema deserialized = Schema::fromValue(schema_value);

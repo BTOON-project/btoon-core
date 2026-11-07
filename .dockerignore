@@ -1,0 +1,4 @@
+build*/
+.git/
+fuzz/corpus/
+fuzz/work/

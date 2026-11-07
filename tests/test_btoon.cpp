@@ -46,8 +46,8 @@ INSTANTIATE_TEST_SUITE_P(
         Value(String("😊")),
         Value(Timestamp{1234567890}),
         Value(Date{9876543210}),
-        Value(BigInt{{0x12, 0x34, 0x56, 0x78}}),
-        Value(StringView("hello"))
+        // Bigints that fit in 64 bits canonicalize to plain ints, so use one that doesn't.
+        Value(BigInt{{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}})
     )
 );
 
@@ -122,7 +122,7 @@ TEST_P(BtoonCompressionTest, RoundTrip) {
     ASSERT_NO_THROW(compressed_data = encode(original, encode_opts));
 
     DecodeOptions decode_opts;
-    decode_opts.decompress = true;
+    decode_opts.auto_decompress = true;
 
     Value decoded;
     ASSERT_NO_THROW(decoded = decode(compressed_data, decode_opts));

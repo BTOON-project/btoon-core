@@ -1,39 +1,66 @@
-.TH BTOON 1 "November 2025" "btoon 0.0.1" "User Commands"
+.TH BTOON 1 "November 2026" "btoon 0.1.0" "User Commands"
 .SH NAME
-btoon - a command-line tool for converting between JSON and BTOON
+btoon \- convert between JSON and the BTOON binary format
 .SH SYNOPSIS
+.B btoon encode
+.RI [ IN.json | \- ]
+.RI [ OUT.btoon | \- ]
+.RI [ options ]
+.br
+.B btoon decode
+.RI [ IN.btoon | \- ]
+.RI [ OUT.json | \- ]
+.RI [ options ]
+.br
+.B btoon info
+.RI [ IN.btoon | \- ]
+.br
 .B btoon
-[\fIcommand\fR] [\fIinput\fR] [\fIoutput\fR] [\fIoptions\fR]
+.BR \-\-version " | " \-\-help
 .SH DESCRIPTION
+BTOON is MessagePack with a columnar encoding for arrays of uniform objects, extra types
+(timestamps, big integers, float vectors) and optional compression/HMAC envelopes.
 .B btoon
-is a command-line tool for converting between the JSON and BTOON binary formats.
-.SH COMMANDS
-.TP
-.B encode
-Encode a JSON file to BTOON.
-.TP
-.B decode
-Decode a BTOON file to JSON.
+converts JSON documents to canonical BTOON and back, and describes BTOON files.
+A missing or \fB\-\fR path means standard input/output.
+.PP
+Values JSON can't represent are written as single-key tagged objects, which are
+recognized again by \fBencode\fR:
+\fB{"$binary": "<base64>"}\fR, \fB{"$timestamp": "2024-01-01T00:00:00Z"}\fR (RFC 3339; the offset is kept),
+\fB{"$date": <ms>}\fR, \fB{"$datetime": "<ns>"}\fR, \fB{"$bigint": "<decimal>"}\fR,
+\fB{"$float": "NaN"}\fR, \fB{"$f32": [...]}\fR, \fB{"$f64": [...]}\fR, \fB{"$ext": [type, "<base64>"]}\fR.
 .SH OPTIONS
 .TP
-.B --compress
-Enable compression (default: zlib).
+.BR \-\-compress [ =\fIALGO\fR ]
+Wrap the output in a compression envelope.
+.I ALGO
+is zlib (the default), lz4, zstd, brotli or snappy, depending on the build. Decoding
+detects envelopes automatically.
 .TP
-.B --version
-Print version information.
+.B \-\-no\-tabular
+Disable the columnar encoding. The output is then plain canonical MessagePack.
 .TP
-.B --help
-Print usage information.
+.BI \-\-hmac\-key\-file " FILE"
+When encoding, sign with HMAC-SHA256 using the bytes of
+.IR FILE .
+When decoding, require and verify a signature made with that key.
+.TP
+.B \-\-compact
+Write single-line JSON when decoding.
+.TP
+.B \-\-no\-tags
+Don't interpret \fB$\fR-tagged objects when encoding.
+.SH EXIT STATUS
+0 on success, 1 on a conversion error (the message includes the BTOON error code, for
+example \fBtruncated\fR or \fBauthentication_failed\fR), and 2 on a usage error.
 .SH EXAMPLES
-.TP
-.B btoon encode input.json output.btoon
-Encode a JSON file to BTOON.
-.TP
-.B btoon decode input.btoon output.json
-Decode a BTOON file to JSON.
+.nf
+btoon encode data.json data.btoon \-\-compress
+btoon decode data.btoon \- | jq .
+btoon info data.btoon
+cat data.json | btoon encode \- \- | btoon decode \- \- \-\-compact
+.fi
 .SH SEE ALSO
-.BR btoon (7)
-.SH BUGS
-No known bugs.
-.SH AUTHOR
-btoon authors
+.BR btoon\-convert (1),
+.BR btoon\-schema (1).
+The format specification is at https://github.com/BTOON-project/btoon-core/blob/main/docs/SPEC.md

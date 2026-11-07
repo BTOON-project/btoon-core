@@ -97,6 +97,10 @@ void convert_streaming(const std::string& input_file,
                       const ConvertOptions& opts);
 
 int main(int argc, char* argv[]) {
+    if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
+        print_usage(argv[0]);
+        return 0;
+    }
     if (argc < 3) {
         print_usage(argv[0]);
         return 1;
@@ -286,7 +290,7 @@ int main(int argc, char* argv[]) {
 }
 
 void print_usage(const std::string& program_name) {
-    std::cout << "BTOON Format Converter v0.0.1" << std::endl;
+    std::cout << "BTOON Format Converter v" << btoon::version() << std::endl;
     std::cout << "Usage: " << program_name << " [options] <input> [output]" << std::endl;
     std::cout << std::endl;
     std::cout << "Options:" << std::endl;
@@ -638,25 +642,22 @@ void write_csv(std::ostream& output, const Value& data, const ConvertOptions& op
 // In production, these would use proper libraries
 
 Value read_yaml(std::istream& input) {
-    // Simplified: treat as JSON for now
-    // In production, use a proper YAML library
-    return read_json(input);
+    // No YAML parser is bundled: only JSON-compatible YAML (YAML 1.2 is a JSON superset) is accepted.
+    try {
+        return read_json(input);
+    } catch (const std::exception&) {
+        throw std::runtime_error("YAML input must be JSON-compatible (no YAML parser is bundled)");
+    }
 }
 
 void write_yaml(std::ostream& output, const Value& data, bool pretty) {
-    // Simplified: output as JSON
-    // In production, use a proper YAML library
+    // JSON is valid YAML 1.2, so emit JSON (not idiomatic YAML, but loadable by any YAML parser).
     write_json(output, data, pretty);
 }
 
 Value read_msgpack(std::istream& input) {
-    // Read entire file
-    input.seekg(0, std::ios::end);
-    size_t size = static_cast<size_t>(input.tellg());
-    input.seekg(0, std::ios::beg);
-    
-    std::vector<uint8_t> buffer(size);
-    input.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(size));
+    // Works for pipes too (no seeking).
+    std::vector<uint8_t> buffer((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     
     // BTOON is MessagePack-compatible, so we can decode directly
     return decode(buffer);

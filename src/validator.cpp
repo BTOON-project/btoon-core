@@ -9,6 +9,7 @@
 #endif
 
 #include "btoon/validator.h"
+#include "internal.h"
 #include "btoon/decoder.h"
 #include <cmath>
 #include <stack>
@@ -162,24 +163,11 @@ bool TypeValidator::validateTimestamp(const Timestamp& ts) {
 }
 
 bool TypeValidator::validateExtension(const Extension& ext) {
-    // Validate known extension types
-    switch (ext.type) {
-        case -1:   // Timestamp (legacy)
-        case -2:   // Date
-        case -3:   // DateTime
-        case -4:   // BigInt
-        case -5:   // VectorFloat
-        case -6:   // VectorDouble
-        case -10:  // Tabular data
-            return true;
-        default:
-            // Unknown extension types in range -128 to -1 are reserved
-            if (ext.type >= -128 && ext.type <= -1) {
-                return false;  // Reserved but undefined
-            }
-            // Application-specific types (0-127) are allowed
-            return ext.type >= 0 && ext.type <= 127;
-    }
+    // Every int8 id is acceptable (docs/SPEC.md §5): BTOON's own ids are decoded
+    // into dedicated types, reserved ids surface as generic extensions, and
+    // 0..127 belong to applications.
+    (void)ext;
+    return true;
 }
 
 // ===== SecurityValidator Implementation =====
@@ -207,10 +195,10 @@ bool SecurityValidator::checkForZipBomb(std::span<const uint8_t> data) {
     // Look for compression headers
     if (data.size() >= 16) {
         // Check for BTOON compression header
-        uint32_t magic = ntohl(*reinterpret_cast<const uint32_t*>(data.data()));
+        uint32_t magic = detail::load_be32(data.data());
         if (magic == 0x42544F4E) {  // "BTON"
-            uint32_t uncompressed = ntohl(*reinterpret_cast<const uint32_t*>(data.data() + 12));
-            uint32_t compressed = ntohl(*reinterpret_cast<const uint32_t*>(data.data() + 8));
+            uint32_t uncompressed = detail::load_be32(data.data() + 12);
+            uint32_t compressed = detail::load_be32(data.data() + 8);
             
             // Check for extreme compression ratio (>1000:1)
             if (compressed > 0 && uncompressed / compressed > 1000) {
@@ -277,13 +265,13 @@ bool SecurityValidator::checkSizeClaims(std::span<const uint8_t> data) {
             pos += size;
         } else if (type == 0xda) {  // str16
             if (!checker.canRead(pos, 2)) return false;
-            uint16_t size = ntohs(*reinterpret_cast<const uint16_t*>(&data[pos]));
+            uint16_t size = detail::load_be16(&data[pos]);
             pos += 2;
             if (!checker.canRead(pos, size)) return false;
             pos += size;
         } else if (type == 0xdb) {  // str32
             if (!checker.canRead(pos, 4)) return false;
-            uint32_t size = ntohl(*reinterpret_cast<const uint32_t*>(&data[pos]));
+            uint32_t size = detail::load_be32(&data[pos]);
             pos += 4;
             if (size > 1024 * 1024 * 100) return false;  // 100MB limit
             if (!checker.canRead(pos, size)) return false;
@@ -338,13 +326,13 @@ public:
         // Check for compression header
         [[maybe_unused]] bool isCompressed = false;
         if (data.size() >= 16) {
-            uint32_t magic = ntohl(*reinterpret_cast<const uint32_t*>(data.data()));
+            uint32_t magic = detail::load_be32(data.data());
             if (magic == 0x42544F4E) {  // "BTON"
                 isCompressed = true;
                 
                 // Validate compression header
-                uint32_t compressed_size = ntohl(*reinterpret_cast<const uint32_t*>(data.data() + 8));
-                uint32_t uncompressed_size = ntohl(*reinterpret_cast<const uint32_t*>(data.data() + 12));
+                uint32_t compressed_size = detail::load_be32(data.data() + 8);
+                uint32_t uncompressed_size = detail::load_be32(data.data() + 12);
                 
                 if (compressed_size + 16 != data.size()) {
                     result.addError("Compression header size mismatch");
@@ -533,10 +521,7 @@ public:
             return result;
         }
         
-        std::visit([&](auto&& arg) {
-            using T = std::decay_t<decltype(arg)>;
-            validateTypedValue(arg, result, depth);
-        }, value);
+        std::visit([&](auto&& arg) { validateTypedValue(arg, result, depth); }, value);
         
         return result;
     }
@@ -546,18 +531,8 @@ public:
             return false;
         }
         
-        // Quick MessagePack format check
-        uint8_t first = data[0];
-        
-        // Check for valid MessagePack type
-        if (first <= 0x7f) return true;  // Positive fixint
-        if (first >= 0x80 && first <= 0x8f) return true;  // Fixmap
-        if (first >= 0x90 && first <= 0x9f) return true;  // Fixarray
-        if (first >= 0xa0 && first <= 0xbf) return true;  // Fixstr
-        if (first >= 0xc0 && first <= 0xdf) return true;  // Various types
-        if (first >= 0xe0 && first <= 0xff) return true;  // Negative fixint
-        
-        return false;
+        // Every first byte starts a valid MessagePack value except the reserved 0xc1.
+        return data[0] != 0xc1;
     }
 };
 

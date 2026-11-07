@@ -1,60 +1,55 @@
+// SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
+// SPDX-License-Identifier: MIT
+//
+// Dictionary coding: an array of the distinct values (in first-seen order),
+// followed by one BTOON integer index per element.
 #include "btoon/dictionary_codec.h"
-#include "btoon/encoder.h"
 #include "btoon/decoder.h"
-#include "btoon/btoon.h"
-#include <vector>
-#include <algorithm>
+#include "btoon/encoder.h"
+#include "internal.h"
+
+#include <string>
+#include <unordered_map>
 
 namespace btoon {
 
 std::vector<uint8_t> DictionaryCodec::encode(const Array& data) {
+    // Canonical encodings identify equal values, so hashing them gives O(n) lookup.
+    std::unordered_map<std::string, size_t> index_of;
+    std::vector<const Value*> dictionary;
+    std::vector<size_t> indices;
+    indices.reserve(data.size());
+    for (const auto& value : data) {
+        auto bytes = btoon::encode(value);
+        auto [it, inserted] = index_of.try_emplace(std::string(bytes.begin(), bytes.end()), dictionary.size());
+        if (inserted) dictionary.push_back(&value);
+        indices.push_back(it->second);
+    }
     Encoder encoder;
-    if (data.empty()) {
-        return {encoder.getBuffer().begin(), encoder.getBuffer().end()};
-    }
-
-    std::vector<Value> dictionary;
-    for (const auto& value : data) {
-        if (std::find(dictionary.begin(), dictionary.end(), value) == dictionary.end()) {
-            dictionary.push_back(value);
-        }
-    }
-
-    std::vector<std::vector<uint8_t>> elements;
-    elements.reserve(dictionary.size());
-    for (const auto& val : dictionary) {
-        Encoder temp_encoder;
-        temp_encoder.encode(val);
-        auto buf = temp_encoder.getBuffer();
-        elements.emplace_back(buf.begin(), buf.end());
-    }
-    encoder.encodeArray(elements);
-
-    for (const auto& value : data) {
-        auto it = std::find(dictionary.begin(), dictionary.end(), value);
-        encoder.encodeInt(std::distance(dictionary.begin(), it));
-    }
-
-    auto encoded_data = encoder.getBuffer();
-    return {encoded_data.begin(), encoded_data.end()};
+    encoder.encodeArrayHeader(dictionary.size());
+    for (const Value* v : dictionary) encoder.encode(*v);
+    for (size_t idx : indices) encoder.encodeUint(idx);
+    return encoder.release();
 }
 
-Array DictionaryCodec::decode(const std::vector<uint8_t>& data) {
-    Decoder decoder;
+Array DictionaryCodec::decode(const std::vector<uint8_t>& data, size_t max_elements) {
     Array result;
-    size_t pos = 0;
-
-    auto [dictionary_value, bytes_read_dict] = decoder.decode_and_get_pos({data.data() + pos, data.size() - pos});
-    pos += bytes_read_dict;
-    Array dictionary_array = std::get<Array>(dictionary_value);
-
-    while (pos < data.size()) {
-        auto [value, bytes_read_val] = decoder.decode_and_get_pos({data.data() + pos, data.size() - pos});
-        pos += bytes_read_val;
-        int index = std::get<Int>(value);
-        result.push_back(dictionary_array[index]);
+    if (data.empty()) return result;
+    Decoder decoder;
+    auto [dict_value, used] = decoder.decode_and_get_pos(data);
+    const Array* dictionary = std::get_if<Array>(&dict_value);
+    if (!dictionary) detail::fail(ErrorCode::invalid_argument, "DictionaryCodec: missing dictionary array");
+    std::span<const uint8_t> rest = std::span<const uint8_t>(data).subspan(used);
+    while (!rest.empty()) {
+        if (result.size() >= max_elements) detail::fail(ErrorCode::size_limit, "DictionaryCodec: too many elements");
+        auto [value, n] = decoder.decode_and_get_pos(rest);
+        rest = rest.subspan(n);
+        auto idx = value.as_uint64();
+        if (!idx || *idx >= dictionary->size()) {
+            detail::fail(ErrorCode::invalid_argument, "DictionaryCodec: index out of range");
+        }
+        result.push_back((*dictionary)[static_cast<size_t>(*idx)]);
     }
-
     return result;
 }
 

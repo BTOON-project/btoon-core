@@ -1,97 +1,41 @@
-# BTOON Fuzzing
+# Fuzzing
 
-This directory contains fuzzing infrastructure for testing BTOON robustness against malformed and malicious inputs.
+Two fuzzers exercise the decoder with hostile input:
 
-## Building Fuzz Tests
+- **`btoon_fuzz_smoke`** (`tests/fuzz_smoke.cpp`): a dependency-free mutation fuzzer
+  that works with any compiler. It's part of `ctest` (20k iterations). Run it longer by
+  hand with `build/btoon_fuzz_smoke 1000000`.
+- **`fuzz_decoder`** (`fuzz/fuzz_decoder.cpp`): a coverage-guided libFuzzer target. It
+  needs Clang with libFuzzer. Apple's clang lacks libFuzzer, so on macOS use Homebrew
+  LLVM.
 
-### With LibFuzzer (Clang)
+Both check the same invariants:
+- decoding succeeds or throws `BtoonException`, never anything else;
+- every decoded value re-encodes and decodes back to itself;
+- the validator never throws anything else either.
 
-```bash
-mkdir build-fuzz
-cd build-fuzz
-CC=clang CXX=clang++ cmake .. -DBUILD_FUZZ_TESTS=ON -DENABLE_SANITIZERS=ON
-make fuzz_decoder
-```
+Any crash or sanitizer report is a bug.
 
-### Running Fuzz Tests
-
-```bash
-# Create corpus directory
-mkdir corpus
-
-# Run fuzzer
-./fuzz_decoder corpus/ -max_total_time=60 -max_len=1024
-
-# Run with a specific crash/hang
-./fuzz_decoder crash-file
-```
-
-### With AFL++
+## libFuzzer
 
 ```bash
-# Build with AFL instrumentation
-CC=afl-clang-fast CXX=afl-clang-fast++ cmake ..
-make
-
-# Prepare corpus
-mkdir input output
-echo "test" > input/seed
-
-# Run fuzzing
-afl-fuzz -i input -o output ./fuzz_decoder
+python3 fuzz/make_corpus.py                    # seeds from the conformance vectors
+LLVM=$(brew --prefix llvm)                     # macOS; on Linux just use clang++
+cmake -S . -B build-fuzz -DCMAKE_CXX_COMPILER=$LLVM/bin/clang++ \
+      -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_FUZZ_TESTS=ON \
+      -DBUILD_TESTS=OFF -DBUILD_TOOLS=OFF -DBUILD_EXAMPLES=OFF \
+      -DZLIB_ROOT=$(brew --prefix zlib) \
+      -DCMAKE_EXE_LINKER_FLAGS="-L$LLVM/lib/c++ -Wl,-rpath,$LLVM/lib/c++"
+cmake --build build-fuzz --target fuzz_decoder
+mkdir -p fuzz/work && cp fuzz/corpus/* fuzz/work/
+./build-fuzz/fuzz_decoder -max_total_time=300 -rss_limit_mb=2048 fuzz/work
 ```
 
-## Corpus Files
+With `BUILD_FUZZ_TESTS=ON` the library itself is built with
+`-fsanitize=fuzzer-no-link,address,undefined`, so libFuzzer gets coverage from the
+decoder and not just from the harness.
 
-The `corpus/` directory should contain seed inputs for fuzzing:
-- Valid BTOON files of various types
-- Edge cases (empty, minimal, maximal)
-- Previously found crashes (for regression testing)
+Results on an Apple M4 Max on 2026-11-07: 788,707 executions in 4 minutes reached 2,613
+edges, with no crashes.
 
-## Security Testing
-
-The fuzzer tests for:
-- Buffer overflows/underflows
-- Integer overflows
-- Excessive memory allocation
-- Stack overflow via deep nesting
-- Invalid type markers
-- Malformed size claims
-- UTF-8 validation bypass attempts
-
-## Integration with CI
-
-Add fuzzing to your CI pipeline:
-
-```yaml
-fuzz-test:
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@v2
-    - name: Build Fuzzer
-      run: |
-        CC=clang CXX=clang++ cmake -B build -DBUILD_FUZZ_TESTS=ON
-        cmake --build build --target fuzz_decoder
-    - name: Run Fuzzing
-      run: |
-        ./build/fuzz_decoder corpus/ -max_total_time=300
-```
-
-## Analyzing Crashes
-
-When a crash is found:
-
-1. Minimize the test case:
-   ```bash
-   ./fuzz_decoder crash-file -minimize_crash=1
-   ```
-
-2. Debug with sanitizers:
-   ```bash
-   ASAN_OPTIONS=symbolize=1 ./fuzz_decoder crash-file
-   ```
-
-3. Add to regression corpus:
-   ```bash
-   cp crash-file corpus/regression/
-   ```
+`fuzz/corpus/` and `fuzz/work/` are generated directories. Don't commit them.

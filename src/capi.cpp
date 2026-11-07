@@ -3,6 +3,8 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <new>
+#include <stdexcept>
 
 // --- Helper Functions ---
 
@@ -253,23 +255,41 @@ BTOON_API btoon_value_t* btoon_value_create_extension(int8_t type, const uint8_t
     return to_c_value(btoon::Value(btoon::Extension{type, std::vector<uint8_t>(data, data + len)}));
 }
 
+namespace {
+char* copy_error(const char* msg) {
+    size_t n = std::strlen(msg);
+    char* out = new (std::nothrow) char[n + 1];
+    if (out) std::memcpy(out, msg, n + 1);
+    return out;
+}
+}  // namespace
+
+// No C++ exception may cross the C boundary: every entry point catches.
 BTOON_API btoon_result_t btoon_encode(const btoon_value_t* value, const btoon_encode_options_t* options) {
-    btoon::EncodeOptions cpp_options;
-    if (options) {
-        cpp_options.compress = options->compress;
-        cpp_options.compression_algorithm = static_cast<btoon::CompressionAlgorithm>(options->compression_algorithm);
-        cpp_options.compression_level = options->compression_level;
-        cpp_options.auto_tabular = options->auto_tabular;
+    try {
+        if (!value) return {nullptr, 0, copy_error("btoon_encode: value is NULL")};
+        btoon::EncodeOptions cpp_options;
+        if (options) {
+            cpp_options.compress = options->compress;
+            cpp_options.compression_algorithm = static_cast<btoon::CompressionAlgorithm>(options->compression_algorithm);
+            cpp_options.compression_level = options->compression_level;
+            cpp_options.auto_tabular = options->auto_tabular;
+        }
+        std::vector<uint8_t> buffer = btoon::encode(to_cpp_value(value), cpp_options);
+        auto* data = new uint8_t[buffer.empty() ? 1 : buffer.size()];
+        if (!buffer.empty()) std::memcpy(data, buffer.data(), buffer.size());
+        return {data, buffer.size(), nullptr};
+    } catch (const std::exception& e) {
+        return {nullptr, 0, copy_error(e.what())};
+    } catch (...) {
+        return {nullptr, 0, copy_error("btoon_encode: unknown error")};
     }
-    btoon::Value cpp_value = to_cpp_value(value);
-    std::vector<uint8_t> buffer = btoon::encode(cpp_value, cpp_options);
-    uint8_t* data = new uint8_t[buffer.size()];
-    std::memcpy(data, buffer.data(), buffer.size());
-    return {data, buffer.size(), nullptr};
 }
 
 BTOON_API btoon_value_t* btoon_decode(const uint8_t* data, size_t size, const btoon_decode_options_t* options, char** error) {
+    if (error) *error = nullptr;
     try {
+        if (!data && size) throw std::invalid_argument("btoon_decode: data is NULL");
         btoon::DecodeOptions cpp_options;
         if (options) {
             cpp_options.auto_decompress = options->decompress;
@@ -278,10 +298,11 @@ BTOON_API btoon_value_t* btoon_decode(const uint8_t* data, size_t size, const bt
         btoon::Value cpp_value = btoon::decode({data, size}, cpp_options);
         return to_c_value(cpp_value);
     } catch (const std::exception& e) {
-        *error = new char[strlen(e.what()) + 1];
-        std::strcpy(*error, e.what());
-        return nullptr;
+        if (error) *error = copy_error(e.what());
+    } catch (...) {
+        if (error) *error = copy_error("btoon_decode: unknown error");
     }
+    return nullptr;
 }
 
 BTOON_API void btoon_free_result(btoon_result_t result) {
@@ -289,7 +310,8 @@ BTOON_API void btoon_free_result(btoon_result_t result) {
     delete[] result.error;
 }
 
-BTOON_API const char* btoon_version(void) {
-    return "0.0.1";
-}
-}
+BTOON_API void btoon_free_error(char* error) { delete[] error; }
+
+BTOON_API const char* btoon_version(void) { return btoon::version(); }
+
+} // extern "C"

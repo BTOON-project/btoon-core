@@ -1,5 +1,6 @@
 #include "btoon/compression.h"
 #include "btoon/btoon.h"
+#include "internal.h"
 #include <zlib.h>
 #include <stdexcept>
 #include <array>
@@ -241,395 +242,391 @@ std::vector<uint8_t> compress(CompressionAlgorithm algorithm, std::span<const ui
 }
 
 std::vector<uint8_t> compress(const CompressionProfile& profile, std::span<const uint8_t> data) {
-    // Check minimum size threshold
     if (data.size() < profile.min_size) {
         return std::vector<uint8_t>(data.begin(), data.end());
     }
-    
     CompressionAlgorithm algo = profile.algorithm;
-    
-    // Auto-select algorithm if requested
     if (algo == CompressionAlgorithm::AUTO || profile.adaptive) {
         algo = select_best_algorithm(data, profile.numeric_level <= 3);
     }
-    
     if (algo == CompressionAlgorithm::NONE) {
         return std::vector<uint8_t>(data.begin(), data.end());
     }
-    
     return compress(algo, data, profile.numeric_level);
 }
+
+bool compression_available(CompressionAlgorithm algorithm) noexcept {
+    switch (algorithm) {
+        case CompressionAlgorithm::ZLIB: return true;
+#ifdef BTOON_WITH_LZ4
+        case CompressionAlgorithm::LZ4: return true;
+#endif
+#ifdef BTOON_WITH_ZSTD
+        case CompressionAlgorithm::ZSTD: return true;
+#endif
+#ifdef BTOON_WITH_BROTLI
+        case CompressionAlgorithm::BROTLI: return true;
+#endif
+#ifdef BTOON_WITH_SNAPPY
+        case CompressionAlgorithm::SNAPPY: return true;
+#endif
+        default: return false;
+    }
+}
+
+const char* compression_algorithm_name(CompressionAlgorithm algorithm) noexcept {
+    switch (algorithm) {
+        case CompressionAlgorithm::ZLIB: return "zlib";
+        case CompressionAlgorithm::LZ4: return "lz4";
+        case CompressionAlgorithm::ZSTD: return "zstd";
+        case CompressionAlgorithm::BROTLI: return "brotli";
+        case CompressionAlgorithm::SNAPPY: return "snappy";
+        case CompressionAlgorithm::NONE: return "none";
+        case CompressionAlgorithm::AUTO: return "auto";
+    }
+    return "unknown";
+}
+
+namespace {
+
+using detail::fail;
+
+[[noreturn]] void unsupported(CompressionAlgorithm algorithm) {
+    fail(ErrorCode::unsupported_compression,
+         std::string("compression algorithm not available in this build: ") +
+             compression_algorithm_name(algorithm));
+}
+
+[[noreturn]] void corrupt(const char* algo, const char* what) {
+    fail(ErrorCode::invalid_envelope, std::string(algo) + " payload " + what);
+}
+
+// Output buffer that grows geometrically up to `limit`, so a lying size
+// header can't make us allocate the full limit for a tiny input.
+struct GrowBuf {
+    std::vector<uint8_t> out;
+    size_t used = 0;
+    size_t limit;
+    explicit GrowBuf(size_t lim, size_t input_size) : limit(lim) {
+        size_t initial = std::min(limit, std::max<size_t>(64 * 1024, input_size * 4));
+        out.resize(initial);
+    }
+    // Returns false if already at the limit.
+    bool grow() {
+        if (out.size() >= limit) return false;
+        size_t next = out.size() > limit / 2 ? limit : std::max<size_t>(out.size() * 2, 1);
+        out.resize(next);
+        return true;
+    }
+    std::vector<uint8_t> take() {
+        out.resize(used);
+        return std::move(out);
+    }
+};
+
+// zlib (RFC 1950). If `exact`, the stream must produce exactly `limit` bytes.
+// At the limit we probe with a 1-byte scratch buffer: any further output means
+// the payload is larger than allowed; otherwise inflate reports completion.
+std::vector<uint8_t> inflate_zlib(std::span<const uint8_t> in, size_t limit, bool exact) {
+    z_stream strm{};
+    if (inflateInit(&strm) != Z_OK) fail(ErrorCode::generic, "zlib: inflateInit failed");
+    GrowBuf buf(limit, in.size());
+    strm.next_in = const_cast<Bytef*>(in.data());
+    strm.avail_in = static_cast<uInt>(in.size());
+    uint8_t scratch = 0;
+    int ret = Z_OK;
+    bool overflow = false;
+    for (;;) {
+        const bool at_limit = buf.used == buf.out.size() && !buf.grow();
+        uint8_t* out = at_limit ? &scratch : buf.out.data() + buf.used;
+        size_t room = at_limit ? 1 : std::min<size_t>(buf.out.size() - buf.used, 1u << 30);
+        strm.next_out = out;
+        strm.avail_out = static_cast<uInt>(room);
+        ret = inflate(&strm, Z_NO_FLUSH);
+        size_t produced = room - strm.avail_out;
+        if (at_limit && produced) {
+            overflow = true;
+            break;
+        }
+        buf.used += produced;
+        if (ret == Z_STREAM_END) break;
+        if ((ret != Z_OK && ret != Z_BUF_ERROR) || (ret == Z_BUF_ERROR && strm.avail_in == 0)) {
+            inflateEnd(&strm);
+            corrupt("zlib", ret == Z_BUF_ERROR ? "is truncated" : "is corrupt");
+        }
+    }
+    const bool trailing = strm.avail_in != 0;
+    inflateEnd(&strm);
+    if (overflow) {
+        if (exact) corrupt("zlib", "decompresses to more than the declared size");
+        fail(ErrorCode::size_limit, "zlib: decompressed data exceeds the size limit");
+    }
+    if (trailing) corrupt("zlib", "has trailing bytes");
+    if (exact && buf.used != limit) corrupt("zlib", "decompressed size does not match the header");
+    return buf.take();
+}
+
+std::vector<uint8_t> deflate_zlib(std::span<const uint8_t> data, int level) {
+    uLongf bound = compressBound(static_cast<uLong>(data.size()));
+    std::vector<uint8_t> out(bound);
+    int rc = compress2(out.data(), &bound, data.data(), static_cast<uLong>(data.size()),
+                       std::clamp(level == 0 ? 6 : level, 1, 9));
+    if (rc != Z_OK) fail(ErrorCode::generic, "zlib: compression failed");
+    out.resize(bound);
+    return out;
+}
+
+#ifdef BTOON_WITH_LZ4
+std::vector<uint8_t> lz4_compress(std::span<const uint8_t> data, int level) {
+    if (data.size() > static_cast<size_t>(LZ4_MAX_INPUT_SIZE)) fail(ErrorCode::size_limit, "lz4: input too large");
+    int bound = LZ4_compressBound(static_cast<int>(data.size()));
+    std::vector<uint8_t> out(static_cast<size_t>(bound));
+    int n = level <= 1
+        ? LZ4_compress_default(reinterpret_cast<const char*>(data.data()), reinterpret_cast<char*>(out.data()),
+                               static_cast<int>(data.size()), bound)
+        : LZ4_compress_HC(reinterpret_cast<const char*>(data.data()), reinterpret_cast<char*>(out.data()),
+                          static_cast<int>(data.size()), bound, std::min(level, 12));
+    if (n <= 0) fail(ErrorCode::generic, "lz4: compression failed");
+    out.resize(static_cast<size_t>(n));
+    return out;
+}
+
+std::vector<uint8_t> lz4_decompress(std::span<const uint8_t> in, size_t expected) {
+    // An LZ4 block expands at most ~255x; reject impossible size claims up front.
+    if (expected > in.size() * 255 + 16 || expected > static_cast<size_t>(LZ4_MAX_INPUT_SIZE)) {
+        corrupt("lz4", "declares an impossible decompressed size");
+    }
+    std::vector<uint8_t> out(expected);
+    int n = LZ4_decompress_safe(reinterpret_cast<const char*>(in.data()), reinterpret_cast<char*>(out.data()),
+                                static_cast<int>(in.size()), static_cast<int>(expected));
+    if (n < 0 || static_cast<size_t>(n) != expected) corrupt("lz4", "is corrupt or has the wrong size");
+    return out;
+}
+#endif
+
+#ifdef BTOON_WITH_ZSTD
+std::vector<uint8_t> zstd_compress(std::span<const uint8_t> data, int level) {
+    size_t bound = ZSTD_compressBound(data.size());
+    std::vector<uint8_t> out(bound);
+    size_t n = ZSTD_compress(out.data(), bound, data.data(), data.size(), level == 0 ? 3 : level);
+    if (ZSTD_isError(n)) fail(ErrorCode::generic, std::string("zstd: ") + ZSTD_getErrorName(n));
+    out.resize(n);
+    return out;
+}
+
+// Window size from a zstd frame header (RFC 8878 §3.1.1.1.2), or 0 if `in` doesn't start
+// with a complete zstd frame header. A single-segment frame's window is its content size.
+uint64_t zstd_window_size(std::span<const uint8_t> in, unsigned long long content_size) {
+    if (in.size() < 6) return 0;
+    const uint32_t magic = in[0] | (in[1] << 8) | (in[2] << 16) | (uint32_t(in[3]) << 24);
+    if (magic != 0xFD2FB528u) return 0;  // skippable frames are rejected here too
+    if (in[4] & 0x20) return content_size;  // Single_Segment_flag
+    const uint64_t base = uint64_t(1) << (10 + (in[5] >> 3));
+    return base + (base >> 3) * (in[5] & 7);
+}
+
+std::vector<uint8_t> zstd_decompress(std::span<const uint8_t> in, size_t limit, bool exact) {
+    unsigned long long declared = ZSTD_getFrameContentSize(in.data(), in.size());
+    if (declared == ZSTD_CONTENTSIZE_ERROR) corrupt("zstd", "is not a zstd frame");
+    if (exact && declared != ZSTD_CONTENTSIZE_UNKNOWN && declared != limit) {
+        corrupt("zstd", "frame size does not match the header");
+    }
+    // Spec §6: the window is what the decoder must allocate, so bound it by what the
+    // content can need: max(8 MiB, min(size, 128 MiB)).
+    const uint64_t window = zstd_window_size(in, declared);
+    if (window == 0) corrupt("zstd", "is not a zstd frame");
+    if (window > std::clamp<uint64_t>(limit, uint64_t(8) << 20, uint64_t(128) << 20)) {
+        corrupt("zstd", "declares a window larger than its content can need");
+    }
+    ZSTD_DStream* ds = ZSTD_createDStream();
+    if (!ds) fail(ErrorCode::generic, "zstd: out of memory");
+    GrowBuf buf(limit, in.size());
+    ZSTD_inBuffer ib{in.data(), in.size(), 0};
+    uint8_t scratch = 0;
+    size_t ret = 1;
+    bool overflow = false;
+    while (ret != 0) {
+        const bool at_limit = buf.used == buf.out.size() && !buf.grow();
+        ZSTD_outBuffer ob = at_limit ? ZSTD_outBuffer{&scratch, 1, 0}
+                                     : ZSTD_outBuffer{buf.out.data() + buf.used, buf.out.size() - buf.used, 0};
+        size_t in_before = ib.pos;
+        ret = ZSTD_decompressStream(ds, &ob, &ib);
+        if (ZSTD_isError(ret)) {
+            ZSTD_freeDStream(ds);
+            corrupt("zstd", "is corrupt");
+        }
+        if (at_limit && ob.pos) {
+            overflow = true;
+            break;
+        }
+        buf.used += at_limit ? 0 : ob.pos;
+        if (ret != 0 && ob.pos == 0 && ib.pos == in_before) {  // no progress possible
+            ZSTD_freeDStream(ds);
+            corrupt("zstd", "is truncated");
+        }
+    }
+    ZSTD_freeDStream(ds);
+    if (overflow) {
+        if (exact) corrupt("zstd", "decompresses to more than the declared size");
+        fail(ErrorCode::size_limit, "zstd: decompressed data exceeds the size limit");
+    }
+    if (ib.pos != ib.size) corrupt("zstd", "has trailing bytes");
+    if (exact && buf.used != limit) corrupt("zstd", "decompressed size does not match the header");
+    return buf.take();
+}
+#endif
+
+#ifdef BTOON_WITH_BROTLI
+std::vector<uint8_t> brotli_compress(std::span<const uint8_t> data, int level) {
+    size_t size = BrotliEncoderMaxCompressedSize(data.size());
+    if (size == 0) size = data.size() + 1024;
+    std::vector<uint8_t> out(size);
+    if (!BrotliEncoderCompress(std::clamp(level == 0 ? 6 : level, 0, 11), BROTLI_DEFAULT_WINDOW,
+                               BROTLI_DEFAULT_MODE, data.size(), data.data(), &size, out.data())) {
+        fail(ErrorCode::generic, "brotli: compression failed");
+    }
+    out.resize(size);
+    return out;
+}
+
+std::vector<uint8_t> brotli_decompress(std::span<const uint8_t> in, size_t limit, bool exact) {
+    BrotliDecoderState* st = BrotliDecoderCreateInstance(nullptr, nullptr, nullptr);
+    if (!st) fail(ErrorCode::generic, "brotli: out of memory");
+    GrowBuf buf(limit, in.size());
+    const uint8_t* next_in = in.data();
+    size_t avail_in = in.size();
+    uint8_t scratch = 0;
+    bool overflow = false;
+    BrotliDecoderResult res = BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT;
+    while (res == BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT) {
+        const bool at_limit = buf.used == buf.out.size() && !buf.grow();
+        uint8_t* start_out = at_limit ? &scratch : buf.out.data() + buf.used;
+        uint8_t* next_out = start_out;
+        size_t avail_out = at_limit ? 1 : buf.out.size() - buf.used;
+        res = BrotliDecoderDecompressStream(st, &avail_in, &next_in, &avail_out, &next_out, nullptr);
+        size_t produced = static_cast<size_t>(next_out - start_out);
+        if (at_limit && produced) {
+            overflow = true;
+            break;
+        }
+        buf.used += at_limit ? 0 : produced;
+    }
+    BrotliDecoderDestroyInstance(st);
+    if (overflow) {
+        if (exact) corrupt("brotli", "decompresses to more than the declared size");
+        fail(ErrorCode::size_limit, "brotli: decompressed data exceeds the size limit");
+    }
+    if (res == BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT) corrupt("brotli", "is truncated");
+    if (res != BROTLI_DECODER_RESULT_SUCCESS) corrupt("brotli", "is corrupt");
+    if (avail_in != 0) corrupt("brotli", "has trailing bytes");
+    if (exact && buf.used != limit) corrupt("brotli", "decompressed size does not match the header");
+    return buf.take();
+}
+#endif
+
+#ifdef BTOON_WITH_SNAPPY
+std::vector<uint8_t> snappy_compress(std::span<const uint8_t> data) {
+    std::string out;
+    snappy::Compress(reinterpret_cast<const char*>(data.data()), data.size(), &out);
+    return {out.begin(), out.end()};
+}
+
+std::vector<uint8_t> snappy_decompress(std::span<const uint8_t> in, size_t limit, bool exact) {
+    size_t n = 0;
+    if (!snappy::GetUncompressedLength(reinterpret_cast<const char*>(in.data()), in.size(), &n)) {
+        corrupt("snappy", "is corrupt");
+    }
+    if (exact && n != limit) corrupt("snappy", "decompressed size does not match the header");
+    if (!exact && n > limit) fail(ErrorCode::size_limit, "snappy: decompressed data exceeds the size limit");
+    // Snappy expands at most ~32x.
+    if (n > in.size() * 32 + 64) corrupt("snappy", "declares an impossible decompressed size");
+    std::vector<uint8_t> out(n);
+    if (!snappy::RawUncompress(reinterpret_cast<const char*>(in.data()), in.size(),
+                               reinterpret_cast<char*>(out.data()))) {
+        corrupt("snappy", "is corrupt");
+    }
+    return out;
+}
+#endif
+
+std::vector<uint8_t> decompress_impl(CompressionAlgorithm algorithm, std::span<const uint8_t> in,
+                                     size_t limit, bool exact) {
+    switch (algorithm) {
+        case CompressionAlgorithm::ZLIB:
+            return inflate_zlib(in, limit, exact);
+#ifdef BTOON_WITH_LZ4
+        case CompressionAlgorithm::LZ4:
+            if (!exact) fail(ErrorCode::invalid_argument, "lz4: block payloads need the decompressed size");
+            return lz4_decompress(in, limit);
+#endif
+#ifdef BTOON_WITH_ZSTD
+        case CompressionAlgorithm::ZSTD:
+            return zstd_decompress(in, limit, exact);
+#endif
+#ifdef BTOON_WITH_BROTLI
+        case CompressionAlgorithm::BROTLI:
+            return brotli_decompress(in, limit, exact);
+#endif
+#ifdef BTOON_WITH_SNAPPY
+        case CompressionAlgorithm::SNAPPY:
+            return snappy_decompress(in, limit, exact);
+#endif
+        case CompressionAlgorithm::NONE:
+            if (in.size() > limit || (exact && in.size() != limit)) {
+                corrupt("uncompressed", "has the wrong size");
+            }
+            return {in.begin(), in.end()};
+        default:
+            unsupported(algorithm);
+    }
+}
+
+}  // namespace
 
 std::vector<uint8_t> compress(CompressionAlgorithm algorithm, std::span<const uint8_t> data, int level) {
     switch (algorithm) {
         case CompressionAlgorithm::NONE:
             return std::vector<uint8_t>(data.begin(), data.end());
-            
         case CompressionAlgorithm::ZLIB:
-            return compress_zlib(data, level == 0 ? 6 : level);
-            
+            return deflate_zlib(data, level);
 #ifdef BTOON_WITH_LZ4
         case CompressionAlgorithm::LZ4:
-            return compress_lz4(data, level);
+            return lz4_compress(data, level);
 #endif
-
 #ifdef BTOON_WITH_ZSTD
         case CompressionAlgorithm::ZSTD:
-            return compress_zstd(data, level);
+            return zstd_compress(data, level);
 #endif
-
 #ifdef BTOON_WITH_BROTLI
         case CompressionAlgorithm::BROTLI:
-            return compress_brotli(data, level == 0 ? 6 : level);
+            return brotli_compress(data, level);
 #endif
-
 #ifdef BTOON_WITH_SNAPPY
         case CompressionAlgorithm::SNAPPY:
-            return compress_snappy(data);
+            return snappy_compress(data);
 #endif
-        
-        case CompressionAlgorithm::AUTO:
-            // AUTO should have been resolved to a specific algorithm before calling this
-            return compress(select_best_algorithm(data, level <= 3), data, level);
-            
-        default:
-            throw BtoonException("Unsupported compression algorithm");
-    }
-}
-
-std::vector<uint8_t> decompress(CompressionAlgorithm algorithm, std::span<const uint8_t> compressed_data) {
-    switch (algorithm) {
-        case CompressionAlgorithm::NONE:
-            return std::vector<uint8_t>(compressed_data.begin(), compressed_data.end());
-            
-        case CompressionAlgorithm::ZLIB:
-            return decompress_zlib(compressed_data);
-            
-#ifdef BTOON_WITH_LZ4
-        case CompressionAlgorithm::LZ4:
-            return decompress_lz4(compressed_data);
-#endif
-
-#ifdef BTOON_WITH_ZSTD
-        case CompressionAlgorithm::ZSTD:
-            return decompress_zstd(compressed_data);
-#endif
-
-#ifdef BTOON_WITH_BROTLI
-        case CompressionAlgorithm::BROTLI:
-            return decompress_brotli(compressed_data);
-#endif
-
-#ifdef BTOON_WITH_SNAPPY
-        case CompressionAlgorithm::SNAPPY:
-            return decompress_snappy(compressed_data);
-#endif
-        
-        case CompressionAlgorithm::AUTO:
-            // AUTO should never appear in decompression (header should specify actual algorithm)
-            throw BtoonException("AUTO compression algorithm cannot be used for decompression");
-            
-        default:
-            throw BtoonException("Unsupported compression algorithm");
-    }
-}
-
-// --- Zlib Implementation ---
-
-std::vector<uint8_t> compress_zlib(std::span<const uint8_t> data, int level) {
-    if (data.empty()) return {};
-
-    z_stream strm;
-    strm.zalloc = Z_NULL;
-    strm.zfree = Z_NULL;
-    strm.opaque = Z_NULL;
-
-    if (deflateInit(&strm, level) != Z_OK) {
-        throw BtoonException("Failed to initialize zlib compression");
-    }
-
-    std::vector<uint8_t> compressed;
-    const size_t CHUNK = 16384;
-    unsigned char out[CHUNK];
-
-    strm.avail_in = data.size();
-    strm.next_in = (Bytef*)data.data();
-
-    do {
-        strm.avail_out = CHUNK;
-        strm.next_out = out;
-        if (deflate(&strm, Z_FINISH) == Z_STREAM_ERROR) {
-            deflateEnd(&strm);
-            throw BtoonException("Zlib compression error");
+        case CompressionAlgorithm::AUTO: {
+            CompressionAlgorithm best = select_best_algorithm(data, level <= 3);
+            if (best == CompressionAlgorithm::AUTO) best = CompressionAlgorithm::ZLIB;
+            return compress(best, data, level);
         }
-        size_t have = CHUNK - strm.avail_out;
-        compressed.insert(compressed.end(), out, out + have);
-    } while (strm.avail_out == 0);
-
-    deflateEnd(&strm);
-    return compressed;
+        default:
+            unsupported(algorithm);
+    }
 }
 
-std::vector<uint8_t> decompress_zlib(std::span<const uint8_t> compressed_data) {
-    if (compressed_data.empty()) return {};
-
-    z_stream strm;
-    strm.zalloc = Z_NULL;
-    strm.zfree = Z_NULL;
-    strm.opaque = Z_NULL;
-    strm.avail_in = 0;
-    strm.next_in = Z_NULL;
-
-    if (inflateInit(&strm) != Z_OK) {
-        throw BtoonException("Failed to initialize zlib decompression");
-    }
-
-    std::vector<uint8_t> decompressed;
-    const size_t CHUNK = 16384;
-    unsigned char out[CHUNK];
-
-    strm.avail_in = compressed_data.size();
-    strm.next_in = (Bytef*)compressed_data.data();
-
-    do {
-        strm.avail_out = CHUNK;
-        strm.next_out = out;
-        int ret = inflate(&strm, Z_NO_FLUSH);
-        if (ret == Z_STREAM_ERROR || ret == Z_DATA_ERROR || ret == Z_MEM_ERROR) {
-            inflateEnd(&strm);
-            throw BtoonException("Zlib decompression error");
-        }
-        size_t have = CHUNK - strm.avail_out;
-        decompressed.insert(decompressed.end(), out, out + have);
-    } while (strm.avail_out == 0);
-
-    inflateEnd(&strm);
-    return decompressed;
+std::vector<uint8_t> decompress(CompressionAlgorithm algorithm, std::span<const uint8_t> data,
+                                size_t expected_size) {
+    return decompress_impl(algorithm, data, expected_size, true);
 }
 
-// --- LZ4 Implementation ---
-
-#ifdef BTOON_WITH_LZ4
-std::vector<uint8_t> compress_lz4(std::span<const uint8_t> data, int level) {
-    if (data.empty()) return {};
-    
-    size_t max_dst_size = LZ4_compressBound(data.size());
-    std::vector<uint8_t> compressed(max_dst_size + sizeof(uint32_t)); // Extra space for original size
-    
-    // Store original size at the beginning for decompression
-    uint32_t original_size = static_cast<uint32_t>(data.size());
-    std::memcpy(compressed.data(), &original_size, sizeof(uint32_t));
-    
-    int compressed_size;
-    
-    if (level <= 1) {
-        // Use fast compression
-        compressed_size = LZ4_compress_default(
-            (const char*)data.data(),
-            (char*)(compressed.data() + sizeof(uint32_t)),
-            data.size(),
-            max_dst_size
-        );
-    } else {
-        // Use high compression (LZ4HC)
-        compressed_size = LZ4_compress_HC(
-            (const char*)data.data(),
-            (char*)(compressed.data() + sizeof(uint32_t)),
-            data.size(),
-            max_dst_size,
-            std::min(level, 12)  // LZ4HC max level is 12
-        );
-    }
-
-    if (compressed_size <= 0) {
-        throw BtoonException("LZ4 compression failed");
-    }
-    compressed.resize(compressed_size + sizeof(uint32_t));
-    return compressed;
+std::vector<uint8_t> decompress_bounded(CompressionAlgorithm algorithm, std::span<const uint8_t> data,
+                                        size_t max_size) {
+    return decompress_impl(algorithm, data, max_size, false);
 }
 
-std::vector<uint8_t> decompress_lz4(std::span<const uint8_t> compressed_data) {
-    if (compressed_data.size() < sizeof(uint32_t)) {
-        throw BtoonException("LZ4 compressed data too small");
-    }
-    
-    // Read original size from the beginning
-    uint32_t original_size;
-    std::memcpy(&original_size, compressed_data.data(), sizeof(uint32_t));
-    
-    std::vector<uint8_t> decompressed(original_size);
-    
-    int decompressed_size = LZ4_decompress_safe(
-        (const char*)(compressed_data.data() + sizeof(uint32_t)),
-        (char*)decompressed.data(),
-        compressed_data.size() - sizeof(uint32_t),
-        original_size
-    );
-    
-    if (decompressed_size != static_cast<int>(original_size)) {
-        throw BtoonException("LZ4 decompression failed");
-    }
-    
-    return decompressed;
+std::vector<uint8_t> decompress(CompressionAlgorithm algorithm, std::span<const uint8_t> data) {
+    return decompress_impl(algorithm, data, kDefaultMaxDecompressedSize, false);
 }
-#endif
-
-// --- Zstd Implementation ---
-
-#ifdef BTOON_WITH_ZSTD
-std::vector<uint8_t> compress_zstd(std::span<const uint8_t> data, int level) {
-    if (data.empty()) return {};
-
-    size_t max_dst_size = ZSTD_compressBound(data.size());
-    std::vector<uint8_t> compressed(max_dst_size);
-
-    size_t compressed_size = ZSTD_compress(
-        compressed.data(),
-        max_dst_size,
-        data.data(),
-        data.size(),
-        level == 0 ? 1 : level // ZSTD level 0 is invalid
-    );
-
-    if (ZSTD_isError(compressed_size)) {
-        throw BtoonException("ZSTD compression failed: " + std::string(ZSTD_getErrorName(compressed_size)));
-    }
-    compressed.resize(compressed_size);
-    return compressed;
-}
-
-std::vector<uint8_t> decompress_zstd(std::span<const uint8_t> compressed_data) {
-    unsigned long long const decompressed_size = ZSTD_getFrameContentSize(compressed_data.data(), compressed_data.size());
-    if (decompressed_size == ZSTD_CONTENTSIZE_ERROR || decompressed_size == ZSTD_CONTENTSIZE_UNKNOWN) {
-        throw BtoonException("ZSTD decompression failed: unable to determine decompressed size.");
-    }
-
-    std::vector<uint8_t> decompressed(decompressed_size);
-    
-    size_t actual_size = ZSTD_decompress(
-        decompressed.data(),
-        decompressed_size,
-        compressed_data.data(),
-        compressed_data.size()
-    );
-
-    if (ZSTD_isError(actual_size) || actual_size != decompressed_size) {
-        throw BtoonException("ZSTD decompression failed: " + std::string(ZSTD_getErrorName(actual_size)));
-    }
-    return decompressed;
-}
-#endif
-
-#ifdef BTOON_WITH_BROTLI
-
-std::vector<uint8_t> compress_brotli(std::span<const uint8_t> data, int level) {
-    if (data.empty()) return {};
-    
-    // Clamp level to Brotli's valid range (0-11)
-    level = std::max(0, std::min(level, 11));
-    
-    size_t encoded_size = BrotliEncoderMaxCompressedSize(data.size());
-    std::vector<uint8_t> compressed(encoded_size);
-    
-    if (BrotliEncoderCompress(
-            level,
-            BROTLI_DEFAULT_WINDOW,
-            BROTLI_DEFAULT_MODE,
-            data.size(),
-            data.data(),
-            &encoded_size,
-            compressed.data()) == BROTLI_FALSE) {
-        throw BtoonException("Brotli compression failed");
-    }
-    
-    compressed.resize(encoded_size);
-    return compressed;
-}
-
-std::vector<uint8_t> decompress_brotli(std::span<const uint8_t> compressed_data) {
-    if (compressed_data.empty()) return {};
-    
-    // Estimate decompressed size (Brotli doesn't provide an exact size function)
-    // Start with 4x compressed size as initial guess
-    size_t estimated_size = compressed_data.size() * 4;
-    std::vector<uint8_t> decompressed;
-    
-    BrotliDecoderState* state = BrotliDecoderCreateInstance(nullptr, nullptr, nullptr);
-    if (!state) {
-        throw BtoonException("Failed to create Brotli decoder");
-    }
-    
-    const uint8_t* next_in = compressed_data.data();
-    size_t available_in = compressed_data.size();
-    
-    BrotliDecoderResult result;
-    do {
-        size_t old_size = decompressed.size();
-        decompressed.resize(old_size + estimated_size);
-        
-        uint8_t* next_out = decompressed.data() + old_size;
-        size_t available_out = estimated_size;
-        
-        result = BrotliDecoderDecompressStream(
-            state,
-            &available_in,
-            &next_in,
-            &available_out,
-            &next_out,
-            nullptr
-        );
-        
-        // Resize to actual output size
-        decompressed.resize(old_size + (estimated_size - available_out));
-        
-    } while (result == BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT);
-    
-    BrotliDecoderDestroyInstance(state);
-    
-    if (result != BROTLI_DECODER_RESULT_SUCCESS) {
-        throw BtoonException("Brotli decompression failed");
-    }
-    
-    return decompressed;
-}
-
-#endif // BTOON_WITH_BROTLI
-
-#ifdef BTOON_WITH_SNAPPY
-
-std::vector<uint8_t> compress_snappy(std::span<const uint8_t> data) {
-    if (data.empty()) return {};
-    
-    std::string compressed;
-    snappy::Compress(reinterpret_cast<const char*>(data.data()), 
-                     data.size(), &compressed);
-    
-    return std::vector<uint8_t>(compressed.begin(), compressed.end());
-}
-
-std::vector<uint8_t> decompress_snappy(std::span<const uint8_t> compressed_data) {
-    if (compressed_data.empty()) return {};
-    
-    size_t uncompressed_length;
-    if (!snappy::GetUncompressedLength(
-            reinterpret_cast<const char*>(compressed_data.data()),
-            compressed_data.size(),
-            &uncompressed_length)) {
-        throw BtoonException("Invalid Snappy compressed data");
-    }
-    
-    std::vector<uint8_t> decompressed(uncompressed_length);
-    
-    if (!snappy::RawUncompress(
-            reinterpret_cast<const char*>(compressed_data.data()),
-            compressed_data.size(),
-            reinterpret_cast<char*>(decompressed.data()))) {
-        throw BtoonException("Snappy decompression failed");
-    }
-    
-    return decompressed;
-}
-
-#endif // BTOON_WITH_SNAPPY
 
 } // namespace btoon

@@ -1,40 +1,49 @@
 #include <gtest/gtest.h>
-#include "btoon/stream_encoder.h"
-#include "btoon/stream_decoder.h"
+
 #include <sstream>
+
+#include "btoon/stream_decoder.h"
+#include "btoon/stream_encoder.h"
 
 using namespace btoon;
 
 TEST(StreamingTest, RoundTrip) {
     std::stringstream ss;
-
-    Value v1 = Int(123);
-    Value v2 = String("abc");
-    Value v3 = Array{Int(1), Int(2)};
-
+    std::vector<Value> values{Int(123), String("abc"), Array{Int(1), Int(2)}, Map{{"k", nullptr}}};
     {
         StreamEncoder encoder(ss);
-        encoder.write(v1);
-        encoder.write(v2);
-        encoder.write(v3);
+        for (const auto& v : values) encoder.write(v);
         encoder.close();
     }
-
     StreamDecoder decoder(ss);
-    
-    auto decoded1 = decoder.read();
-    ASSERT_TRUE(decoded1.has_value());
-    // This test will fail because the simplified stream decoder reads the whole stream
-    // EXPECT_EQ(v1, *decoded1);
+    for (const auto& expected : values) {
+        ASSERT_TRUE(decoder.has_next());
+        auto got = decoder.read();
+        ASSERT_TRUE(got.has_value());
+        EXPECT_EQ(*got, expected);
+    }
+    EXPECT_FALSE(decoder.has_next());
+    EXPECT_FALSE(decoder.read().has_value());
+}
 
-    // auto decoded2 = decoder.read();
-    // ASSERT_TRUE(decoded2.has_value());
-    // EXPECT_EQ(v2, *decoded2);
+TEST(StreamingTest, ValuesLargerThanTheReadChunk) {
+    std::stringstream ss;
+    Value big = String(std::string(300 * 1024, 'z'));  // spans several 64 KiB reads
+    {
+        StreamEncoder encoder(ss);
+        encoder.write(big);
+        encoder.write(Int(7));
+    }
+    StreamDecoder decoder(ss);
+    EXPECT_EQ(*decoder.read(), big);
+    EXPECT_EQ(*decoder.read(), Value(Int(7)));
+    EXPECT_FALSE(decoder.read().has_value());
+}
 
-    // auto decoded3 = decoder.read();
-    // ASSERT_TRUE(decoded3.has_value());
-    // EXPECT_EQ(v3, *decoded3);
-
-    // auto decoded4 = decoder.read();
-    // EXPECT_FALSE(decoded4.has_value());
+TEST(StreamingTest, TruncatedFinalValueIsAnError) {
+    std::string bytes = "\x01\x92\x01";  // 1, then an array missing an element
+    std::stringstream ss(bytes);
+    StreamDecoder decoder(ss);
+    EXPECT_EQ(*decoder.read(), Value(Int(1)));
+    EXPECT_THROW(decoder.read(), BtoonException);
 }

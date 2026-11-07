@@ -6,7 +6,6 @@
 //  ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝
 //
 //  BTOON Core
-//  Version 0.0.1
 //  https://btoon.net & https://github.com/BTOON-project/btoon-core
 //
 // SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
@@ -16,6 +15,7 @@
 #define BTOON_MEMORY_POOL_H
 
 #include <cstddef>
+#include <cstdlib>
 #include <vector>
 #include <memory>
 #include <stack>

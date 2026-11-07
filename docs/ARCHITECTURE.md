@@ -1,384 +1,92 @@
-# BTOON Architecture & Release Strategy
+# Architecture
 
-## Repository Structure
-
-BTOON uses a multi-repository architecture to maintain clean separation of concerns and independent versioning for each language ecosystem.
-
-### Core Repository (btoon-core)
-
-The `btoon-core` repository contains:
-- Core C++20 implementation
-- Format specification
-- Reference test vectors
-- C API for FFI bindings
-- CMake build system
-- CLI tools (btoon, btoon-schema, btoon-convert)
-
-### Language Binding Repositories
-
-Each language has its own repository to follow language-specific conventions:
-
-#### Strategy 1: Git Submodules (Recommended for Native Bindings)
-
-For languages that compile against C++ (Python, Node.js, PHP):
-
-```bash
-# In btoon-python repository
-git submodule add https://github.com/BTOON-project/btoon-core.git core
-git submodule update --init --recursive
-
-# Build script references core/
-python setup.py build_ext --btoon-core=core/
-```
-
-**Advantages:**
-- Guaranteed version compatibility
-- Single source of truth for C++ code
-- Easier CI/CD integration
-- Atomic updates across core and bindings
-
-**Implementation:**
-```yaml
-# .github/workflows/build.yml in btoon-python
-- name: Checkout with submodules
-  uses: actions/checkout@v3
-  with:
-    submodules: recursive
-    
-- name: Build core library
-  run: |
-    cd core
-    mkdir build && cd build
-    cmake .. -DBUILD_SHARED_LIBS=ON
-    make -j$(nproc)
-    
-- name: Build Python bindings
-  run: |
-    pip install pybind11
-    python setup.py build_ext --inplace
-```
-
-#### Strategy 2: Independent Implementation (Go, JavaScript WebAssembly)
-
-For languages with their own implementations:
-- Pure Go implementation following Go idioms
-- JavaScript/WebAssembly compiled from C++ but distributed independently
-- No direct dependency on btoon-core at runtime
-
-## Release Strategy
-
-### Version Alignment
+## Pipeline
 
 ```
-btoon-core: 0.0.1
-├── btoon-python: 0.0.1.x (follows core.patch)
-├── btoon-nodejs: 0.0.1.x
-├── btoon-php: 0.0.1.x
-├── btoon-javascript: 0.0.1.x (WebAssembly)
-├── btoon-go: 0.0.1 (independent)
-└── btoon-spec: 0.0.1
+encode(value, opts):  Encoder (canonical) ──► compression envelope? ──► signed envelope?
+decode(bytes, opts):  verify signed envelope? ──► decompress (bounded)? ──► Decoder (hardened)
 ```
 
-### Release Artifacts
+`src/btoon.cpp` owns the layering. `Encoder` and `Decoder` deal only with bare documents,
+plus signed envelopes when they're constructed with a `Security`.
 
-#### 1. GitHub Releases Structure
+## Encoder (`src/encoder.cpp`)
 
-```
-btoon-core/
-├── releases/
-│   └── v0.0.1/
-│       ├── binaries/
-│       │   ├── linux/
-│       │   │   ├── x86_64/
-│       │   │   │   ├── btoon
-│       │   │   │   ├── btoon-schema
-│       │   │   │   ├── btoon-convert
-│       │   │   │   └── libbtoon.so.0.0.1
-│       │   │   └── aarch64/
-│       │   │       └── ...
-│       │   ├── darwin/
-│       │   │   ├── x86_64/
-│       │   │   └── arm64/ (M1/M2)
-│       │   └── windows/
-│       │       ├── x64/
-│       │       │   ├── btoon.exe
-│       │       │   └── btoon.dll
-│       │       └── x86/
-│       ├── headers/
-│       │   └── btoon/
-│       │       ├── btoon.h
-│       │       ├── capi.h
-│       │       └── ...
-│       ├── wasm/
-│       │   ├── btoon.wasm
-│       │   └── btoon.js
-│       └── checksums.txt
-```
+- One `std::vector<uint8_t>` serves as the buffer. Its `size()` is the capacity in use
+  and `len_` is the logical end. `reserve(n)` hands back a write pointer, so a multi-byte
+  write costs a single capacity check.
+- Everything is recursive with an explicit `depth`. Containers check `max_depth`.
+- **Tabular** (`tryEncodeTabular`): `detail::tabular_layout` applies the qualification test
+  and the size rule from SPEC §5.6.2. The encoder reserves a 6-byte ext32 header, writes
+  the payload, back-patches each column's `u32` length, and at the end moves the payload
+  down if a shorter ext8 or ext16 header suffices. Columns are written by advancing one
+  `std::map` iterator per row in lockstep. All rows share the same sorted keys, so this is
+  O(N·C) with no lookups.
+- Integers go through `encodeUint` whenever they're non-negative, which makes the output
+  canonical. NaN is canonicalized there too.
 
-#### 2. Build Matrix
+## Decoder (`src/decoder.cpp`)
 
-**Platforms:**
-- Linux: Ubuntu 20.04, 22.04; CentOS 7, 8; Alpine
-- macOS: 11 (Big Sur), 12 (Monterey), 13 (Ventura)
-- Windows: Server 2019, 2022
+- A `Reader` holds `{origin, p, end}`. Every read goes through `need(n)`, which throws
+  `truncated` with the byte offset. No path indexes the input without checking.
+- Arrays check `n ≤ remaining` before `reserve(n)`. Maps check `n ≤ remaining / 2`.
+  Tabular checks `N × C ≤ remaining` and `C ≤ remaining / 9` before allocating rows.
+- Tabular columns are decoded through a sub-`Reader` bounded to `col_len`. A truncated
+  cell becomes `invalid_tabular`, and so does leftover data.
+- Maps insert with `try_emplace(end(), …)`. That is O(1) for canonical input, and it
+  leaves the value untouched when a duplicate key shows up, so non-strict mode can keep
+  the last value.
+- Error paths are `[[noreturn]]` and out of line, which keeps the hot paths small.
 
-**Architectures:**
-- x86_64 (amd64)
-- aarch64 (arm64)
-- armv7 (32-bit ARM)
-- wasm32 (WebAssembly)
+## Envelopes
 
-#### 3. CI/CD Pipeline
+- **Compression** (`src/compression.cpp`): every codec decompresses into a `GrowBuf`. The
+  buffer grows geometrically up to the declared size, so a lying header can't force a
+  large allocation up front. At the limit, a 1-byte probe tells "the stream finished
+  exactly here" apart from "the stream wants more". LZ4 and Snappy expose block APIs
+  that need the whole output buffer, so their size claims are checked against a
+  worst-case expansion ratio first.
+- **Signing** (`src/security.cpp`, `src/sha256.cpp`): the HMAC-SHA256 implementation is
+  in-tree and checked against FIPS 180-4 and RFC 4231 vectors. MACs are compared in
+  constant time, and the MAC is verified before any parsing.
 
-```yaml
-# .github/workflows/release.yml
-name: Release Build
+## Conformance and testing
 
-on:
-  push:
-    tags:
-      - 'v*'
+- `tests/vectors/generate.py` is an **independent** Python implementation, built on
+  msgpack-python plus the BTOON extensions written from the spec. It generates
+  `btoon-vectors.json`. The C++ suite (`tests/test_vectors.cpp`) must decode every vector
+  and re-encode the canonical ones byte for byte. CI runs `generate.py --check` to catch
+  drift.
+- `tests/test_hardening.cpp` covers:
+  - truncation sweeps, random bytes, and huge length claims;
+  - decompression bombs, lying size headers, and every codec;
+  - signing and tampering;
+  - the encoder's depth and UTF-8 limits.
+- Fuzzing: `tests/fuzz_smoke.cpp` (any compiler, part of ctest) and `fuzz/fuzz_decoder.cpp`
+  (libFuzzer). Both run against a library built with ASan and UBSan. See `fuzz/README.md`.
+- CI (`.github/workflows/ci.yml`) runs these:
+  - Linux GCC with every codec, Linux Clang, macOS and Windows MSVC;
+  - ASan+UBSan with every codec;
+  - the vectors check;
+  - a 2-minute libFuzzer run.
 
-jobs:
-  build-matrix:
-    strategy:
-      matrix:
-        os: [ubuntu-20.04, ubuntu-22.04, macos-11, macos-12, windows-2019, windows-2022]
-        arch: [x64, arm64]
-        exclude:
-          - os: windows-2019
-            arch: arm64
-            
-    runs-on: ${{ matrix.os }}
-    
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Build
-        run: |
-          mkdir build
-          cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release \
-                   -DBUILD_SHARED_LIBS=ON \
-                   -DCMAKE_CXX_STANDARD=20
-          cmake --build . --config Release
-          
-      - name: Package
-        run: |
-          cpack -G TGZ
-          
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: btoon-${{ matrix.os }}-${{ matrix.arch }}
-          path: build/btoon-*.tar.gz
-```
+## How the other repositories use core
 
-### Distribution Channels
+- **btoon-python** and **btoon-nodejs** vendor this repo as a git submodule at `core/`.
+  They compile `src/*.cpp` straight into their extension modules, so neither needs
+  OpenSSL or a prebuilt library. They run the shared vectors from the submodule.
+- **btoon-javascript**, **btoon-go** and **btoon-php** are independent implementations
+  of `docs/SPEC.md`. Each keeps a copy of `tests/vectors/btoon-vectors.json`.
+- When the format changes, update the spec and `generate.py` first, regenerate the
+  vectors, then the C++ code, then every library.
 
-#### 1. Package Managers
+## Layout
 
-**C++ Libraries:**
-- **Conan**: `conan install btoon/0.0.1@`
-- **vcpkg**: `vcpkg install btoon`
-- **Homebrew**: `brew install btoon`
-- **APT/YUM**: Via PPA/COPR repositories
-
-**Language-Specific:**
-- **Python**: `pip install btoon`
-- **Node.js**: `npm install @btoon/core`
-- **Go**: `go get github.com/BTOON-project/btoon-go`
-- **PHP**: `pecl install btoon`
-- **Ruby**: `gem install btoon`
-
-#### 2. Docker Images
-
-```dockerfile
-# Official BTOON images
-FROM btoon/btoon:0.0.1         # Full environment
-FROM btoon/btoon:0.0.1-alpine  # Minimal
-FROM btoon/btoon:0.0.1-dev     # With build tools
-```
-
-### Dependency Management
-
-#### For Language Bindings Using Submodules
-
-```python
-# setup.py for btoon-python
-def get_btoon_core_version():
-    """Get version from submodule"""
-    with open('core/CMakeLists.txt') as f:
-        for line in f:
-            if 'project(btoon VERSION' in line:
-                version = line.split()[2].rstrip(')')
-                return version
-    return "0.0.1"
-
-setup(
-    name="btoon",
-    version=get_btoon_core_version(),
-    # ...
-)
-```
-
-#### Version Locking
-
-```json
-// btoon-nodejs/package.json
-{
-  "name": "@btoon/node",
-  "version": "0.0.1",
-  "btoonCoreVersion": "0.0.1",
-  "scripts": {
-    "install": "git submodule update --init --recursive && node-gyp rebuild"
-  }
-}
-```
-
-## Development Workflow
-
-### 1. Feature Development
-
-```bash
-# Work on core feature
-cd btoon-core
-git checkout -b feature/new-codec
-
-# Test with Python bindings
-cd ../btoon-python
-git submodule update --remote core
-python test.py
-
-# Update submodule reference
-git add core
-git commit -m "Update core to include new codec"
-```
-
-### 2. Release Process
-
-```bash
-# 1. Tag core release
-cd btoon-core
-git tag -a v0.0.2 -m "Release 0.0.2"
-git push origin v0.0.2
-
-# 2. Update language bindings
-cd ../btoon-python
-git submodule update --remote
-git add core
-git commit -m "Update to btoon-core v0.0.2"
-git tag -a v0.0.2 -m "Release 0.0.2"
-git push origin v0.0.2
-
-# 3. Publish packages
-python setup.py sdist bdist_wheel
-twine upload dist/*
-```
-
-### 3. Continuous Integration
-
-Each language repository has its own CI that:
-1. Checks out with submodules
-2. Builds btoon-core
-3. Builds language bindings
-4. Runs language-specific tests
-5. Runs cross-compatibility tests
-
-## Binary Compatibility
-
-### ABI Stability
-
-- C API (capi.h) maintains ABI compatibility within major versions
-- C++ API may change between minor versions
-- Use C API for stable FFI bindings
-
-### Symbol Versioning
-
-```cpp
-// Version symbols for shared library
-extern "C" {
-    BTOON_API const char* btoon_version() {
-        return "0.0.1";
-    }
-    
-    BTOON_API int btoon_abi_version() {
-        return 1;  // Increment on ABI break
-    }
-}
-```
-
-## Testing Strategy
-
-### Cross-Language Test Suite
-
-```yaml
-# test-matrix.yml
-test-compatibility:
-  matrix:
-    producer: [cpp, python, go, javascript]
-    consumer: [cpp, python, go, javascript]
-  steps:
-    - name: Produce test data
-      run: ${{ matrix.producer }}/generate-test-data.sh
-    
-    - name: Consume test data
-      run: ${{ matrix.consumer }}/validate-test-data.sh
-```
-
-## Security & Signing
-
-### Release Signing
-
-```bash
-# Sign releases with GPG
-gpg --armor --detach-sign btoon-0.0.1-linux-x64.tar.gz
-
-# Generate checksums
-sha256sum btoon-* > SHA256SUMS
-gpg --clearsign SHA256SUMS
-```
-
-### Reproducible Builds
-
-Use Docker for deterministic builds:
-
-```dockerfile
-FROM ubuntu:20.04
-RUN apt-get update && apt-get install -y \
-    gcc-10 g++-10 cmake git
-WORKDIR /build
-COPY . .
-RUN cmake -B build -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_COMPILER=gcc-10 \
-    -DCMAKE_CXX_COMPILER=g++-10
-RUN cmake --build build
-```
-
-## Recommendations
-
-### For BTOON Project:
-
-1. **Use Submodules for Native Bindings**
-   - Python, Node.js, PHP should use btoon-core as submodule
-   - Ensures consistency and easier maintenance
-
-2. **Independent Implementations for Go**
-   - Pure Go implementation for better integration
-   - No CGO dependency for easier cross-compilation
-
-3. **WebAssembly for JavaScript**
-   - Compile btoon-core to WASM
-   - Distribute as npm package without native dependencies
-
-4. **Release Automation**
-   - GitHub Actions for multi-platform builds
-   - Automatic package publishing
-   - Docker images for each release
-
-5. **Version Strategy**
-   - Core and bindings share major.minor
-   - Bindings can have independent patch versions
-   - Tag releases consistently across repos
-
-This architecture provides flexibility while maintaining consistency across the BTOON ecosystem.
+| Path | Contents |
+|---|---|
+| `include/btoon/` | Public headers (the installed set is listed in `BTOON_PUBLIC_HEADERS`) |
+| `src/internal.h` | Private helpers: endian load/store, UTF-8, bigint, tabular rule, `fail()` |
+| `src/schema.cpp`, `validator.cpp`, `zero_copy.cpp` | Schemas, structural validation, read-only views |
+| `src/*_codec.cpp` | Delta, RLE and dictionary utility codecs |
+| `tools/` | `btoon`, `btoon-convert`, `btoon-schema`, and `json_mapping.h` |
+| `experimental/` | Design sketches that aren't built (see its README) |

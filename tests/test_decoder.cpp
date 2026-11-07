@@ -24,8 +24,10 @@ TEST(DecoderTest, DecodeBool) {
 TEST(DecoderTest, DecodePositiveFixint) {
     std::vector<uint8_t> data = {0x2a}; // 42
     Value decoded = decode(data);
-    ASSERT_TRUE(std::holds_alternative<Uint>(decoded));
-    EXPECT_EQ(std::get<Uint>(decoded), 42);
+    // Integers that fit int64 decode as Int (SPEC §4, DECISIONS D4)
+    ASSERT_TRUE(std::holds_alternative<Int>(decoded));
+    EXPECT_EQ(std::get<Int>(decoded), 42);
+    EXPECT_EQ(decoded, Value(Uint(42)));  // and compare equal to Uint
 }
 
 TEST(DecoderTest, DecodeNegativeFixint) {
@@ -51,9 +53,9 @@ TEST(DecoderTest, DecodeArray) {
     auto* arr = std::get_if<Array>(&decoded);
     ASSERT_NE(arr, nullptr);
     ASSERT_EQ(arr->size(), 3);
-    EXPECT_EQ(std::get<Uint>((*arr)[0]), 1);
-    EXPECT_EQ(std::get<Uint>((*arr)[1]), 2);
-    EXPECT_EQ(std::get<Uint>((*arr)[2]), 3);
+    EXPECT_EQ(std::get<Int>((*arr)[0]), 1);
+    EXPECT_EQ(std::get<Int>((*arr)[1]), 2);
+    EXPECT_EQ(std::get<Int>((*arr)[2]), 3);
 }
 
 TEST(DecoderTest, DecodeMap) {
@@ -74,7 +76,7 @@ TEST(DecoderTest, DecodeMap) {
     ASSERT_NE(str, nullptr);
     EXPECT_EQ(*str, "Alice");
 
-    EXPECT_EQ(std::get<Uint>((*map)["age"]), 30);
+    EXPECT_EQ(std::get<Int>((*map)["age"]), 30);
 }
 
 TEST(DecoderTest, InvalidBuffer) {
