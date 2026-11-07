@@ -335,8 +335,8 @@ public:
         if (schema_map->count("metadata")) {
             const Map* metadata_map = std::get_if<Map>(&schema_map->at("metadata"));
             if (metadata_map) {
-                for (const auto& [key, value] : *metadata_map) {
-                    metadata_[key] = value;
+                for (const auto& [key, entry] : *metadata_map) {
+                    metadata_[key] = entry;
                 }
             }
         }

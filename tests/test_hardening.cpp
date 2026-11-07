@@ -3,6 +3,7 @@
 // Run under -DENABLE_SANITIZERS=ON to turn any memory error into a failure.
 #include <gtest/gtest.h>
 
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <limits>
