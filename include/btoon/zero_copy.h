@@ -233,9 +233,11 @@ public:
     /**
      * @brief Create (create_new) or open a named shared memory segment.
      *
-     * Returns nullptr on failure. The creator removes the name when its buffer is
-     * destroyed. Not available on Android, whose C library has no POSIX named shared
-     * memory: create() always returns nullptr there.
+     * Returns nullptr on failure. New segments are readable and writable by the
+     * owner only (POSIX mode 0600). When opening an existing segment, size 0 maps all
+     * of it, and a segment smaller than size is refused. The creator removes the
+     * name when its buffer is destroyed. Not available on Android, whose C library
+     * has no POSIX named shared memory: create() always returns nullptr there.
      */
     static std::unique_ptr<SharedMemoryBuffer> create(
         const std::string& name, 

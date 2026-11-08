@@ -350,7 +350,12 @@ TEST(Hardening, ZstdWindowIsBoundedByContent) {
 }
 
 #if !defined(_WIN32) && !defined(__ANDROID__)
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+#include <cstdio>
 
 #include "btoon/zero_copy.h"
 
@@ -372,5 +377,54 @@ TEST(SharedMemory, OpenerDoesNotUnlinkTheCreatorsSegment) {
     again.reset();
     creator.reset();
     EXPECT_FALSE(SharedMemoryBuffer::create(name, 4096, false));
+}
+
+TEST(SharedMemory, OwnerOnlyAndSizeChecked) {
+    const std::string name = "/btoon-p" + std::to_string(getpid());
+    auto creator = SharedMemoryBuffer::create(name, 4096, true);
+    ASSERT_TRUE(creator);
+    int fd = shm_open(name.c_str(), O_RDONLY, 0);
+    ASSERT_GE(fd, 0);
+    struct stat st {};
+    ASSERT_EQ(fstat(fd, &st), 0);
+    close(fd);
+    EXPECT_EQ(st.st_mode & 077, 0u) << "group/other must have no access";
+    // macOS rounds segments up to whole pages, so compare against the real size.
+    const size_t real_size = static_cast<size_t>(st.st_size);
+    EXPECT_FALSE(SharedMemoryBuffer::create(name, real_size + 1, false)) << "larger than the segment";
+    EXPECT_TRUE(SharedMemoryBuffer::create(name, real_size, false));
+    auto whole = SharedMemoryBuffer::create(name, 0, false);
+    ASSERT_TRUE(whole);
+    EXPECT_GE(whole->size(), 4096u);
+}
+
+// The C API's views must own their mapping: reading them after the call returns used
+// to touch unmapped memory.
+TEST(ZeroCopyCApi, ViewsOwnTheirMapping) {
+    const std::string path = ::testing::TempDir() + "btoon-mmap-" + std::to_string(getpid());
+    {
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        ASSERT_TRUE(f);
+        const char bytes[] = "btoon-mmap";
+        std::fwrite(bytes, 1, sizeof bytes, f);
+        std::fclose(f);
+    }
+    btoon_memory_view_t file_view = btoon_mmap_file(path.c_str());
+    ASSERT_TRUE(file_view);
+    ASSERT_EQ(btoon_memory_view_size(file_view), 11u);
+    EXPECT_EQ(std::memcmp(btoon_memory_view_data(file_view), "btoon-mmap", 11), 0);
+    btoon_munmap_file(file_view);
+    std::remove(path.c_str());
+
+    EXPECT_FALSE(btoon_mmap_file("/dev/null")) << "only regular files are mapped";
+
+    const std::string name = "/btoon-c" + std::to_string(getpid());
+    btoon_memory_view_t shm_view = btoon_shm_create(name.c_str(), 4096, 1);
+    ASSERT_TRUE(shm_view);
+    EXPECT_EQ(btoon_memory_view_size(shm_view), 4096u);
+    EXPECT_EQ(btoon_memory_view_data(shm_view)[0], 0);
+    EXPECT_TRUE(SharedMemoryBuffer::create(name, 4096, false)) << "segment alive while the view is";
+    btoon_shm_close(shm_view);
+    EXPECT_FALSE(SharedMemoryBuffer::create(name, 4096, false)) << "closing the creator's view removes it";
 }
 #endif

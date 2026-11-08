@@ -5,6 +5,30 @@ All notable changes to BTOON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-11-08
+
+### Security
+- **Use after free in the zero-copy C API.** `btoon_mmap_file()` and `btoon_shm_create()`
+  returned views into a mapping that was released before the function returned, so
+  any read through the view touched unmapped memory. `btoon_shm_create()` also deleted
+  a newly created segment right away. Views now own their mapping, and
+  `btoon_munmap_file()` / `btoon_shm_close()` release it.
+- **Shared memory permissions.** `SharedMemoryBuffer` created POSIX segments with mode
+  0666, so other local users could read them (and write them under a permissive umask).
+  Segments are now owner-only (0600).
+- **Size check when opening a segment.** Opening an existing segment mapped the
+  requested size without checking the segment's real size. Touching pages past its end
+  raised SIGBUS, which another user who pre-created a smaller segment could trigger.
+  Smaller segments are now refused, and size 0 maps the whole segment.
+
+### Fixed
+- Windows: shared memory segments larger than 4 GiB were truncated (the high 32 bits
+  of the size were dropped).
+- `MemoryMappedFile::open()` accepts regular, non-empty files only (not devices or
+  FIFOs).
+
+The wire format and the encoder and decoder are unchanged.
+
 ## [0.1.2] - 2026-11-08
 
 ### Fixed
