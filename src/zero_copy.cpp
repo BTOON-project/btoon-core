@@ -19,6 +19,7 @@
     #endif
 #endif
 #include <algorithm>  // For std::max
+#include <limits>
 
 namespace btoon {
 
@@ -211,7 +212,8 @@ std::unique_ptr<MemoryMappedFile> MemoryMappedFile::open(const std::string& path
     }
     
     struct stat st;
-    if (fstat(fd, &st) < 0) {
+    // Regular files only: devices, FIFOs and the like have no meaningful size.
+    if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) {
         close(fd);
         return nullptr;
     }
@@ -249,7 +251,8 @@ std::unique_ptr<SharedMemoryBuffer> SharedMemoryBuffer::create(
     
     HANDLE mapping = create_new 
         ? CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
-                           0, static_cast<DWORD>(size), name.c_str())
+                           static_cast<DWORD>(static_cast<uint64_t>(size) >> 32),
+                           static_cast<DWORD>(size & 0xFFFFFFFFu), name.c_str())
         : OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, name.c_str());
     
     if (mapping == nullptr) {
@@ -260,6 +263,15 @@ std::unique_ptr<SharedMemoryBuffer> SharedMemoryBuffer::create(
     if (data == nullptr) {
         CloseHandle(mapping);
         return nullptr;
+    }
+    if (size == 0) {  // opened with size 0: report the whole mapped region
+        MEMORY_BASIC_INFORMATION info{};
+        if (VirtualQuery(data, &info, sizeof info) == 0) {
+            UnmapViewOfFile(data);
+            CloseHandle(mapping);
+            return nullptr;
+        }
+        size = info.RegionSize;
     }
     
     return std::unique_ptr<SharedMemoryBuffer>(
@@ -305,15 +317,31 @@ std::unique_ptr<SharedMemoryBuffer> SharedMemoryBuffer::create(
         flags |= O_CREAT | O_EXCL;
     }
     
-    int fd = shm_open(name.c_str(), flags, 0666);
+    // Owner-only: other local users must not read or modify the segment.
+    int fd = shm_open(name.c_str(), flags, 0600);
     if (fd < 0) {
         return nullptr;
     }
     
-    if (create_new && ftruncate(fd, size) < 0) {
-        close(fd);
-        shm_unlink(name.c_str());
-        return nullptr;
+    if (create_new) {
+        if (size > static_cast<uint64_t>(std::numeric_limits<off_t>::max()) ||
+            ftruncate(fd, static_cast<off_t>(size)) < 0) {
+            close(fd);
+            shm_unlink(name.c_str());
+            return nullptr;
+        }
+    } else {
+        // Map no more than the existing segment holds (size 0 means all of it):
+        // touching pages past its end would raise SIGBUS.
+        struct stat st;
+        if (fstat(fd, &st) < 0 || st.st_size <= 0 ||
+            (size != 0 && static_cast<uint64_t>(st.st_size) < size)) {
+            close(fd);
+            return nullptr;
+        }
+        if (size == 0) {
+            size = static_cast<size_t>(st.st_size);
+        }
     }
     
     void* data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -443,6 +471,10 @@ extern "C" {
 
 struct btoon_memory_view {
     MemoryView view;
+    // Keep the mapping alive for as long as the view: a view into a mapped file or a
+    // shared memory segment must not outlive it.
+    std::unique_ptr<MemoryMappedFile> file;
+    std::unique_ptr<SharedMemoryBuffer> shm;
 };
 
 btoon_memory_view_t btoon_memory_view_create(
@@ -451,10 +483,7 @@ btoon_memory_view_t btoon_memory_view_create(
     void (*deleter)(const uint8_t*)) {
     
     try {
-        auto* view = new btoon_memory_view{
-            MemoryView(data, size, deleter)
-        };
-        return view;
+        return new btoon_memory_view{MemoryView(data, size, deleter), nullptr, nullptr};
     } catch (...) {
         return nullptr;
     }
@@ -477,11 +506,8 @@ btoon_memory_view_t btoon_mmap_file(const char* path) {
         auto mmap = MemoryMappedFile::open(path);
         if (!mmap) return nullptr;
         
-        auto* view = new btoon_memory_view{
-            mmap->view()
-        };
-        // Note: Need to manage mmap lifetime properly in production
-        return view;
+        MemoryView view = mmap->view();
+        return new btoon_memory_view{std::move(view), std::move(mmap), nullptr};
     } catch (...) {
         return nullptr;
     }
@@ -500,11 +526,8 @@ btoon_memory_view_t btoon_shm_create(
         auto shm = SharedMemoryBuffer::create(name, size, create_new != 0);
         if (!shm) return nullptr;
         
-        auto* view = new btoon_memory_view{
-            shm->view()
-        };
-        // Note: Need to manage shm lifetime properly in production
-        return view;
+        MemoryView view = shm->view();
+        return new btoon_memory_view{std::move(view), nullptr, std::move(shm)};
     } catch (...) {
         return nullptr;
     }
