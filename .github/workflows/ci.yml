@@ -54,6 +54,23 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config Debug --output-on-failure
 
+  android:
+    name: android (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64]
+    steps:
+      - uses: actions/checkout@v7
+      # Library only (no tests to run on the host); catches APIs missing from Android's libc.
+      - run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake"
+          -DANDROID_ABI=${{ matrix.abi }} -DANDROID_PLATFORM=android-28
+          -DBUILD_TESTS=OFF -DBUILD_TOOLS=OFF -DBUILD_EXAMPLES=OFF
+      - run: cmake --build build --parallel
+
   sanitizers:
     name: asan-ubsan (all codecs)
     runs-on: ubuntu-latest

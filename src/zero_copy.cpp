@@ -280,6 +280,21 @@ SharedMemoryBuffer::~SharedMemoryBuffer() {
     }
 }
 
+#elif defined(__ANDROID__)
+
+// Android's C library has no POSIX named shared memory (shm_open/shm_unlink).
+// Share an ASharedMemory or memfd_create descriptor between processes instead.
+std::unique_ptr<SharedMemoryBuffer> SharedMemoryBuffer::create(
+    const std::string& /*name*/, size_t /*size*/, bool /*create_new*/) {
+    return nullptr;
+}
+
+SharedMemoryBuffer::~SharedMemoryBuffer() {
+    if (data_) {
+        munmap(data_, size_);
+    }
+}
+
 #else  // POSIX
 
 std::unique_ptr<SharedMemoryBuffer> SharedMemoryBuffer::create(
@@ -311,12 +326,14 @@ std::unique_ptr<SharedMemoryBuffer> SharedMemoryBuffer::create(
         return nullptr;
     }
     
-    auto* name_copy = new std::string(name);
+    // Only the process that created the segment removes its name on destruction;
+    // a process that merely opened it must not unlink it for everyone else.
+    auto* owned_name = create_new ? new std::string(name) : nullptr;
     return std::unique_ptr<SharedMemoryBuffer>(
         new SharedMemoryBuffer(
             static_cast<uint8_t*>(data),
             size,
-            name_copy
+            owned_name
         )
     );
 }

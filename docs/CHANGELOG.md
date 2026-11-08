@@ -5,6 +5,15 @@ All notable changes to BTOON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-11-08
+
+### Fixed
+- Android: the library builds again. `SharedMemoryBuffer::create` returns nullptr there,
+  because Android's C library has no POSIX named shared memory (`shm_open`). CI now
+  builds for Android arm64-v8a, armeabi-v7a and x86_64.
+- `SharedMemoryBuffer`: only the process that created a named segment removes its name
+  on destruction. Before, a process that merely opened the segment also unlinked it.
+
 ## [0.1.1] - 2026-11-07
 
 ### Fixed

@@ -231,7 +231,11 @@ private:
 class SharedMemoryBuffer {
 public:
     /**
-     * @brief Create or open a shared memory segment
+     * @brief Create (create_new) or open a named shared memory segment.
+     *
+     * Returns nullptr on failure. The creator removes the name when its buffer is
+     * destroyed. Not available on Android, whose C library has no POSIX named shared
+     * memory: create() always returns nullptr there.
      */
     static std::unique_ptr<SharedMemoryBuffer> create(
         const std::string& name, 
