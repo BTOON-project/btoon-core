@@ -191,7 +191,26 @@ void Encoder::encodeMapHeader(size_t n) {
     }
 }
 
+namespace {
+// docs/SPEC.md §5.7: callers can't write the ids BTOON defines as raw extensions, because
+// a verbatim payload could be malformed or non-canonical. Typed values write them.
+void check_raw_extension_type(int8_t type) {
+    switch (type) {
+        case -1: case -2: case -3: case -4: case -5: case -6: case -10:
+            fail(ErrorCode::invalid_argument,
+                 "extension type " + std::to_string(type) +
+                     " is defined by BTOON; encode the typed value instead (docs/SPEC.md §5.7)");
+        default: return;
+    }
+}
+}  // namespace
+
 void Encoder::encodeExtensionHeader(int8_t type, size_t n) {
+    check_raw_extension_type(type);
+    writeExtensionHeader(type, n);
+}
+
+void Encoder::writeExtensionHeader(int8_t type, size_t n) {
     uint8_t* p = reserve(6);
     const auto t = static_cast<uint8_t>(type);
     switch (n) {
@@ -223,7 +242,8 @@ void Encoder::encodeExtensionHeader(int8_t type, size_t n) {
 }
 
 void Encoder::encodeExtension(int8_t type, std::span<const uint8_t> data) {
-    encodeExtensionHeader(type, data.size());
+    check_raw_extension_type(type);
+    writeExtensionHeader(type, data.size());
     putBytes(data.data(), data.size());
 }
 
@@ -295,20 +315,22 @@ void Encoder::encodeBigInt(std::span<const uint8_t> bytes) {
     } else if (fit.kind == Int64Fit::kUnsigned) {
         encodeUint(fit.u);
     } else {
-        encodeExtension(kExtBigInt, bigint_minimal(bytes));
+        const auto minimal = bigint_minimal(bytes);
+        writeExtensionHeader(kExtBigInt, minimal.size());
+        putBytes(minimal.data(), minimal.size());
     }
 }
 
 void Encoder::encodeVectorFloat(std::span<const float> values) {
     size_t n = values.size() * sizeof(float);
-    encodeExtensionHeader(kExtVectorFloat, n);
+    writeExtensionHeader(kExtVectorFloat, n);
     store_le_array(reserve(n), values.data(), values.size());
     len_ += n;
 }
 
 void Encoder::encodeVectorDouble(std::span<const double> values) {
     size_t n = values.size() * sizeof(double);
-    encodeExtensionHeader(kExtVectorDouble, n);
+    writeExtensionHeader(kExtVectorDouble, n);
     store_le_array(reserve(n), values.data(), values.size());
     len_ += n;
 }

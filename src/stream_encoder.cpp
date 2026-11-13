@@ -15,7 +15,7 @@ namespace btoon {
 class StreamEncoderImpl {
 public:
     StreamEncoderImpl(std::ostream& stream, const EncodeOptions& options) : stream_(stream), encoder_(options) {
-        if (options.compress || !options.hmac_key.empty()) {
+        if (options.compress || options.hmac_key.has_value()) {
             detail::fail(ErrorCode::invalid_argument, "envelopes can't be used in a document stream");
         }
     }

@@ -42,7 +42,30 @@ TEST(Vectors, FileIsWellFormed) {
     const auto& doc = vectors();
     EXPECT_EQ(doc.at("spec").get<std::string>(), spec_version());
     EXPECT_GT(doc.at("vectors").size(), 150u);
+    // The file's defaults are the spec's (§7.1), and must be this library's too.
+    const auto& d = doc.at("defaults");
+    EXPECT_EQ(d.at("max_depth").get<size_t>(), kDefaultMaxDepth);
+    EXPECT_EQ(d.at("max_decompressed_size").get<size_t>(), kDefaultMaxDecompressedSize);
+    EXPECT_EQ(d.at("max_values").get<size_t>(), kDefaultMaxValues);
+    EXPECT_TRUE(d.at("strict").get<bool>());
 }
+
+namespace {
+// Decoder options a vector can set (docs/SPEC.md §10).
+void apply_options(const nlohmann::json& v, DecodeOptions& dopts, EncodeOptions& eopts) {
+    if (!v.contains("options")) return;
+    const auto& o = v.at("options");
+    if (o.contains("hmac_key")) {
+        auto key = vtest::unhex(o.at("hmac_key").get<std::string>());
+        dopts.hmac_key = std::string(key.begin(), key.end());  // may be empty: invalid_argument
+        eopts.hmac_key = dopts.hmac_key;
+    }
+    if (o.contains("strict")) dopts.strict = o.at("strict").get<bool>();
+    if (o.contains("max_depth")) dopts.max_depth = o.at("max_depth").get<size_t>();
+    if (o.contains("max_decompressed_size")) dopts.max_decompressed_size = o.at("max_decompressed_size").get<size_t>();
+    if (o.contains("max_values")) dopts.max_values = o.at("max_values").get<size_t>();
+}
+}  // namespace
 
 TEST(Vectors, AllVectors) {
     size_t checked = 0, skipped = 0;
@@ -53,14 +76,21 @@ TEST(Vectors, AllVectors) {
             ++skipped;
             continue;
         }
+        if (v.contains("encode_error")) {  // a value encoders must refuse
+            const std::string expected = v.at("encode_error");
+            try {
+                encode(vtest::from_typed(v.at("value")));
+                ADD_FAILURE() << "expected encode error " << expected;
+            } catch (const BtoonException& e) {
+                EXPECT_EQ(std::string(e.code_name()), expected) << e.what();
+            }
+            ++checked;
+            continue;
+        }
         const auto bytes = vtest::unhex(v.at("hex").get<std::string>());
         DecodeOptions dopts;
         EncodeOptions eopts;
-        if (v.contains("options") && v.at("options").contains("hmac_key")) {
-            auto key = vtest::unhex(v.at("options").at("hmac_key").get<std::string>());
-            dopts.hmac_key.assign(key.begin(), key.end());
-            eopts.hmac_key = dopts.hmac_key;
-        }
+        apply_options(v, dopts, eopts);
 
         if (v.contains("error")) {
             const std::string expected = v.at("error");

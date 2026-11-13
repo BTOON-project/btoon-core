@@ -65,17 +65,18 @@ layers automatically.
 | `adaptive_compression` | `false` | Pick the algorithm from the data |
 | `min_compression_size` | `256` | |
 | `auto_tabular` | `true` | Columnar encoding when smaller (SPEC §5.6.2) |
-| `max_depth` | `128` | Deeper or cyclic values throw `max_depth` |
+| `max_depth` | `128` | Deeper or cyclic values throw `max_depth`. At most `kMaxDepthLimit` (1000); more is `invalid_argument` |
 | `validate_utf8` | `true` | Throw `invalid_utf8` for bad strings and keys |
-| `hmac_key` | empty | Non-empty: sign with HMAC-SHA256 |
+| `hmac_key` | `std::nullopt` | Set: sign with HMAC-SHA256. An empty key is `invalid_argument` (SPEC §8) |
 
 | `DecodeOptions` | Default | |
 |---|---|---|
-| `strict` | `true` | SPEC §7 strict mode |
-| `max_depth` | `128` | |
-| `max_decompressed_size` | 256 MiB | |
+| `strict` | `true` | SPEC §7 strict mode. Non-strict mode still requires UTF-8 map keys and column names |
+| `max_depth` | `128` | At most `kMaxDepthLimit` (1000); more is `invalid_argument` |
+| `max_decompressed_size` | 64 MiB | Also bounds the column-name bytes a table copies into its rows (SPEC §7.1) |
+| `max_values` | 2^20 (1,048,576) | Values a document may decode to, rows and cells included; map keys don't count (SPEC §7.1). Raise it for large tables |
 | `auto_decompress` | `true` | When `false`, compressed input is rejected |
-| `hmac_key` | empty | Non-empty: require and verify a signed envelope |
+| `hmac_key` | `std::nullopt` | Set: require and verify a signed envelope. An empty key is `invalid_argument` |
 
 ```cpp
 auto bytes = encode(doc, {.compress = true, .compression_algorithm = CompressionAlgorithm::ZSTD});
@@ -83,7 +84,7 @@ Value back = decode(bytes, {.max_decompressed_size = 16 << 20});
 ```
 
 Other functions: `is_tabular(const Array&)` reports whether the encoder would use the
-columnar form. `version()` returns `"0.1.5"` and `spec_version()` returns `"0.1"`.
+columnar form. `version()` returns `"0.2.0"` and `spec_version()` returns `"0.2"`.
 
 ## Errors
 

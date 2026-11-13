@@ -84,11 +84,17 @@ std::vector<uint8_t> maybe_compress(std::vector<uint8_t> raw, const EncodeOption
 
 std::vector<uint8_t> apply_envelopes(std::vector<uint8_t> out, const EncodeOptions& options) {
     if (options.compress) out = maybe_compress(std::move(out), options);
-    if (!options.hmac_key.empty()) out = Security(options.hmac_key).wrap(out);
+    if (options.hmac_key) out = Security(*options.hmac_key).wrap(out);
     return out;
 }
 
 std::vector<uint8_t> encode(const Value& value, const EncodeOptions& options) {
+    if (options.max_depth > kMaxDepthLimit) {
+        fail(ErrorCode::invalid_argument, "max_depth is above " + std::to_string(kMaxDepthLimit));
+    }
+    if (options.hmac_key && options.hmac_key->empty()) {
+        fail(ErrorCode::invalid_argument, "the HMAC key is empty; leave hmac_key unset for no key");
+    }
     Encoder encoder(options);
     encoder.encode(value);
     return apply_envelopes(encoder.release(), options);

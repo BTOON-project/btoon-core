@@ -137,17 +137,24 @@ TEST(Hardening, NonStrictModeIsLenientButStillSafe) {
 }
 
 TEST(Hardening, DecompressionBombIsCapped) {
-    // 64 MiB of zeros compresses to ~64 KiB with zlib.
-    Value big = Binary(64 * 1024 * 1024, 0);
+    // 32 MiB of zeros compresses to ~32 KiB with zlib.
+    Value big = Binary(32 * 1024 * 1024, 0);
     EncodeOptions eo;
     eo.compress = true;
     auto packed = encode(big, eo);
-    ASSERT_LT(packed.size(), 200u * 1024);
+    ASSERT_LT(packed.size(), 100u * 1024);
 
     DecodeOptions small;
     small.max_decompressed_size = 1024 * 1024;
     EXPECT_EQ(code_of(packed, small), ErrorCode::size_limit);
-    EXPECT_EQ(decode(packed), big);  // default 256 MiB limit allows it
+    EXPECT_EQ(decode(packed), big);  // within the default 64 MiB limit (docs/SPEC.md §7.1)
+
+    // 64 MiB of payload plus its header is over the default.
+    auto over = encode(Value(Binary(64 * 1024 * 1024, 0)), eo);
+    EXPECT_EQ(code_of(over), ErrorCode::size_limit);
+    DecodeOptions raised;
+    raised.max_decompressed_size = 65 * 1024 * 1024;
+    EXPECT_NO_THROW(decode(over, raised));
 }
 
 TEST(Hardening, LyingUncompressedSizeIsRejected) {
@@ -308,7 +315,7 @@ TEST(Hardening, DecoderClassOpensEnvelopesLikeDecode) {
         }
         o.hmac_key = key;
         EXPECT_EQ(Decoder(o).decode(sealed_compressed), sample_document());
-        o.hmac_key.clear();
+        o.hmac_key.reset();
         o.auto_decompress = false;
         EXPECT_THROW(Decoder(o).decode(compressed), BtoonException);
     }
@@ -617,4 +624,70 @@ TEST(Hardening, NestedTabularsDoNotPreallocateRows) {
     DecodeOptions opts;
     opts.max_depth = 1000;
     EXPECT_THROW(decode(inner, opts), BtoonException);
+}
+
+// --- Spec 0.2: D23 (limits), D24 (§5.7), D25 (empty keys) ---------------------------------
+
+TEST(Spec02, OptionsOutsideTheSpecFailUpFront) {
+    const auto doc = encode(Int(1));
+    DecodeOptions deep;
+    deep.max_depth = kMaxDepthLimit + 1;
+    EXPECT_EQ(code_of(doc, deep), ErrorCode::invalid_argument);
+    deep.max_depth = kMaxDepthLimit;
+    EXPECT_NO_THROW(decode(doc, deep));
+
+    EncodeOptions edeep;
+    edeep.max_depth = kMaxDepthLimit + 1;
+    try {
+        encode(Int(1), edeep);
+        ADD_FAILURE() << "max_depth above the ceiling accepted";
+    } catch (const BtoonException& e) {
+        EXPECT_EQ(e.code(), ErrorCode::invalid_argument);
+    }
+
+    EncodeOptions empty_key;
+    empty_key.hmac_key = std::string();
+    try {
+        encode(Int(1), empty_key);
+        ADD_FAILURE() << "empty key accepted on encode";
+    } catch (const BtoonException& e) {
+        EXPECT_EQ(e.code(), ErrorCode::invalid_argument);
+    }
+    DecodeOptions empty_dkey;
+    empty_dkey.hmac_key = std::string();
+    EXPECT_EQ(code_of(doc, empty_dkey), ErrorCode::invalid_argument);
+}
+
+TEST(Spec02, RawExtensionsWithDefinedIdsAreRejected) {
+    for (int8_t t : {-1, -2, -3, -4, -5, -6, -10}) {
+        Encoder enc;
+        const std::vector<uint8_t> one{0};
+        EXPECT_THROW(enc.encodeExtension(t, one), BtoonException) << int(t);
+        EXPECT_THROW(enc.encodeExtensionHeader(t, 1), BtoonException) << int(t);
+        try {
+            encode(Value(Extension{t, std::vector<uint8_t>(8, 0)}));
+            ADD_FAILURE() << int(t);
+        } catch (const BtoonException& e) {
+            EXPECT_EQ(e.code(), ErrorCode::invalid_argument);
+        }
+    }
+    // Future ids and application ids are written as given; typed values still encode.
+    EXPECT_EQ(encode(Value(Extension{-11, {1}})), (std::vector<uint8_t>{0xd4, 0xf5, 0x01}));
+    EXPECT_NO_THROW(encode(Value(Extension{7, {1, 2}})));
+    BigInt big{std::vector<uint8_t>(9, 0x11)};
+    for (const Value& v : {Value(Timestamp{1}), Value(Date{1}), Value(DateTime{1}), Value(big),
+                           Value(VectorFloat{{1.0f}}), Value(VectorDouble{{1.0}})}) {
+        EXPECT_EQ(decode(encode(v)), v);
+    }
+}
+
+TEST(Spec02, MaxValuesBoundsLargeDocumentsAndCanBeRaised) {
+    const Array big(3000000, Value(nullptr));
+    const auto bytes = encode(Value(big));
+    EXPECT_EQ(code_of(bytes), ErrorCode::size_limit);  // default 2^21
+    DecodeOptions raised;
+    raised.max_values = 3000001;
+    EXPECT_EQ(std::get<Array>(decode(bytes, raised)).size(), big.size());
+    raised.max_values = 3000000;
+    EXPECT_EQ(code_of(bytes, raised), ErrorCode::size_limit);
 }

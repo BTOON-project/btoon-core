@@ -83,7 +83,7 @@ void info(const std::string& input, const DecodeOptions& opts) {
     std::span<const uint8_t> s = bytes;
     if (s.size() >= 40 && std::memcmp(s.data(), "BTSG", 4) == 0) {
         std::cout << "envelope:    signed (HMAC-SHA256)\n";
-        if (opts.hmac_key.empty()) {
+        if (!opts.hmac_key) {
             std::cout << "             pass --hmac-key-file to verify and inspect the payload\n";
             return;
         }

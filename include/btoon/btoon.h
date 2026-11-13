@@ -23,11 +23,11 @@
 
 // Single source of truth for the library version (CMake parses these lines).
 #define BTOON_VERSION_MAJOR 0
-#define BTOON_VERSION_MINOR 1
-#define BTOON_VERSION_PATCH 5
-#define BTOON_VERSION_STRING "0.1.5"
+#define BTOON_VERSION_MINOR 2
+#define BTOON_VERSION_PATCH 0
+#define BTOON_VERSION_STRING "0.2.0"
 /// Version of docs/SPEC.md implemented by this library.
-#define BTOON_SPEC_VERSION "0.1"
+#define BTOON_SPEC_VERSION "0.2"
 
 #include "btoon/compression.h"
 #include <algorithm>
@@ -254,7 +254,12 @@ using Map = std::map<String, Value>;
 // --- Options -----------------------------------------------------------------
 
 inline constexpr size_t kDefaultMaxDepth = 128;
-inline constexpr size_t kDefaultMaxDecompressedSize = size_t(256) * 1024 * 1024;
+/// The largest max_depth an application may set (docs/SPEC.md §7). Deeper limits could
+/// exhaust a native stack; a larger setting fails with invalid_argument.
+inline constexpr size_t kMaxDepthLimit = 1000;
+inline constexpr size_t kDefaultMaxDecompressedSize = size_t(64) * 1024 * 1024;
+/// Default for DecodeOptions::max_values (docs/SPEC.md §7.1).
+inline constexpr size_t kDefaultMaxValues = size_t(1) << 20;
 
 struct EncodeOptions {
     /// Wrap the output in a compression envelope (docs/SPEC.md §6).
@@ -272,26 +277,34 @@ struct EncodeOptions {
     bool adaptive_compression = false;       ///< Pick the algorithm from the data.
     size_t min_compression_size = 256;       ///< Smaller payloads are never compressed.
 
-    /// Maximum container nesting; deeper values (or cycles) fail with max_depth.
+    /// Maximum container nesting; deeper values (or cycles) fail with max_depth. At most
+    /// kMaxDepthLimit.
     size_t max_depth = kDefaultMaxDepth;
     /// Reject strings/keys that are not well-formed UTF-8.
     bool validate_utf8 = true;
-    /// If non-empty, wrap the result in an HMAC-SHA256 signed envelope (§8).
-    std::string hmac_key;
+    /// Wrap the result in an HMAC-SHA256 signed envelope (§8). std::nullopt means no
+    /// signature. An empty key is a configuration error and fails with invalid_argument.
+    std::optional<std::string> hmac_key;
 };
 
 struct DecodeOptions {
     /// Transparently decompress compression envelopes. If false, they are rejected.
     bool auto_decompress = true;
-    /// Strict mode (docs/SPEC.md §7). Non-strict allows trailing data and
-    /// duplicate keys and skips UTF-8 validation; it never relaxes bounds checks.
+    /// Strict mode (docs/SPEC.md §7). Non-strict allows trailing data and duplicate keys
+    /// and skips UTF-8 validation of string values. Map keys and column names must be
+    /// UTF-8 either way, and no size or bounds check is relaxed.
     bool strict = true;
-    /// Maximum container nesting depth.
+    /// Maximum container nesting depth. At most kMaxDepthLimit.
     size_t max_depth = kDefaultMaxDepth;
-    /// Upper bound for a compression envelope's uncompressed size.
+    /// Upper bound for a compression envelope's uncompressed size. It also bounds the
+    /// column-name bytes a tabular array copies into its rows (docs/SPEC.md §7.1).
     size_t max_decompressed_size = kDefaultMaxDecompressedSize;
-    /// If non-empty, require and verify an HMAC-SHA256 signed envelope (§8).
-    std::string hmac_key;
+    /// Upper bound for the number of values a document decodes to (docs/SPEC.md §7.1).
+    /// Every value counts, including each tabular row and cell; map keys don't.
+    size_t max_values = kDefaultMaxValues;
+    /// Require and verify an HMAC-SHA256 signed envelope (§8). std::nullopt means no key.
+    /// An empty key is a configuration error and fails with invalid_argument.
+    std::optional<std::string> hmac_key;
 };
 
 // --- Core functions ----------------------------------------------------------

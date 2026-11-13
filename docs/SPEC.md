@@ -1,7 +1,7 @@
 # BTOON Format Specification
 
-**Version:** 0.1 (draft)
-**Date:** 2026-11-07
+**Version:** 0.2 (draft)
+**Date:** 2026-11-13
 **Reference implementation:** [btoon-core](https://github.com/BTOON-project/btoon-core)
 **Conformance vectors:** [`tests/vectors/btoon-vectors.json`](../tests/vectors/btoon-vectors.json)
 
@@ -63,7 +63,8 @@ A BTOON value is one of:
 | extension | Any other `(type, bytes)` pair, opaque to BTOON (§5.7). |
 
 **Map keys are strings.** This is the one restriction relative to MessagePack, and it
-matches the data model of JSON. Decoders MUST reject maps with non-string keys.
+matches the data model of JSON. Decoders MUST reject maps with non-string keys. Two keys
+are equal if and only if their UTF-8 bytes are equal. There is no Unicode normalization.
 
 The tabular encoding (§5.6) is not a separate logical type. It is an alternative wire
 encoding of an *array of maps*, and it decodes to exactly that.
@@ -296,18 +297,25 @@ Decoders MUST reject the payload with `invalid_tabular` if any of the following 
 
 - `version ≠ 1`, or any field runs past the end of the extension payload;
 - `num_columns = 0` and `num_rows > 0`;
-- two column names are equal. This holds in non-strict mode too: unlike duplicate map
-  keys, it is a structural error;
+- two column names are equal, byte for byte. This holds in non-strict mode too: unlike
+  duplicate map keys, it is a structural error;
 - a column's values don't consume exactly `col_len` bytes, or a column holds fewer
   than N values;
 - the payload has bytes left over after the last column.
 
-A column name that isn't valid UTF-8 is rejected in strict mode with `invalid_utf8`, the
-same as any other string.
+Column names are checked front to back. For each name, the decoder first checks that it
+is well-formed UTF-8 (`invalid_utf8`, in strict and non-strict mode, §7). It then checks
+that the name differs from every earlier name (`invalid_tabular`). The first name that
+fails determines the error.
 
-Before allocating N rows, decoders MUST check that the remaining payload could hold N
-values per column. Every value is at least 1 byte, so the check is `N × C ≤ remaining
-bytes`.
+After reading the names and type codes, and before reading any column, decoders MUST
+check, in this order:
+
+1. that the remaining payload could hold N values per column. Every value is at least 1
+   byte, so the check is `N × C ≤ remaining bytes` (`invalid_tabular`);
+2. that the column names copied into every row stay within the size limit:
+   `N × Σ len(name_i) ≤ max_decompressed_size` (`size_limit`, §7.1);
+3. the value count for the N row maps (§7.1).
 
 ### 5.7 Other extension types
 
@@ -315,9 +323,13 @@ Decoders MUST return any extension with an id not listed above as a generic
 `(type, data)` pair without interpreting it. Encoders write generic extensions with
 the smallest header (§4.3).
 
-An encoder that accepts raw `(type, data)` extensions from callers SHOULD reject ids
-that this section defines (-1 to -6 and -10), or validate and normalize them. Otherwise
-a payload such as a bigint that fits in 64 bits makes the output non-canonical.
+An encoder that accepts raw `(type, data)` extensions from callers MUST reject the ids
+that §5 defines (-1 to -6 and -10) with `invalid_argument`. Those types are written
+from their typed values, which keeps the output canonical and decodable. Written
+verbatim, a malformed or non-canonical payload would make a document that other
+decoders reject, or one that differs from the canonical encoding. An example is a bigint
+that fits in 64 bits. Ids reserved for future versions (-9…-7, -128…-11) are written as
+given, so documents that use them round-trip.
 
 ---
 
@@ -365,13 +377,15 @@ offset size field
   1. `version ≠ 1` → `invalid_envelope`
   2. `reserved ≠ 0` → `invalid_envelope`
   3. `compressed_size ≠ input length - 16` → `invalid_envelope`
-  4. `uncompressed_size` above their limit (default 256 MiB) → `size_limit`. This check
-     comes **before** decompressing.
+  4. `uncompressed_size` above `max_decompressed_size` (default 64 MiB, §7.1) →
+     `size_limit`. This check comes **before** decompressing.
   5. an unknown or unsupported algorithm → `unsupported_compression`
 - Stop decompressing at `uncompressed_size`. If the payload produces more output or less
   output, the decoder MUST raise `invalid_envelope`.
 - The compressed stream MUST end exactly at the end of the payload. Bytes after it, such
   as a second zlib stream or padding, are `invalid_envelope`.
+- A zlib stream MUST NOT use a preset dictionary. The FDICT flag (bit 5 of the FLG byte)
+  set is `invalid_envelope`, whatever the DICTID.
 - MUST NOT fall back to interpreting envelope bytes as a bare document.
 - SHOULD bound decoder memory for codecs with large windows: reject Zstd frames whose
   window exceeds max(8 MiB, min(`uncompressed_size`, 128 MiB)) with `invalid_envelope`.
@@ -410,26 +424,76 @@ In **strict mode**, which MUST be the default, a decoder MUST reject:
 its children by one. A tabular array increases it by two, one for the array and one for
 the row maps, even when it has no rows. `max_depth = 128` therefore allows 128 nested containers and rejects the
 129th. Encoders MUST apply the same limit and raise `max_depth`, which turns cyclic
-object graphs into errors.
+object graphs into errors. Implementations MUST reject a configured `max_depth` above
+1000 with `invalid_argument`. Deeper limits let input exhaust a native stack.
 
-**Allocation.** Decoders MUST NOT pre-allocate more than the remaining input could
-encode. An array or map announcing N elements needs at least N (or 2N) more bytes, and
-decoders MUST check that before reserving space.
+**Allocation.** A decoder MUST check an announced element count against the remaining
+input before decoding the elements: an array or map announcing N elements needs at
+least N (or 2N) more bytes. That check alone doesn't bound memory, because nested
+containers each check against the same remaining bytes. So the space a decoder reserves
+for elements not yet decoded MUST stay proportional to the input across all levels.
+The reference implementation draws every reservation from one budget per document,
+equal to the input size. Every element owns at least one byte, so a valid document
+always fits. A container that the budget doesn't cover starts empty and grows as its
+elements are decoded.
 
-**Non-strict mode** MAY allow trailing data and duplicate map keys (last wins) and MAY skip
-UTF-8 validation. It MUST NOT relax bounds, depth, or allocation checks, or any other
-structural rule, including the ban on duplicate tabular column names.
+**Non-strict mode** MAY allow trailing data and duplicate map keys (last wins), and MAY
+skip UTF-8 validation of string values. It MUST NOT relax bounds, depth, allocation or
+size checks, or any other structural rule, including the ban on duplicate tabular column
+names.
+
+Map keys and column names MUST be well-formed UTF-8 in both modes. Keys are compared by
+their bytes. A decoder that replaced invalid sequences, with U+FFFD for example, could
+merge two keys that differ on the wire and silently drop a value.
 
 **Precedence.** Decoders parse front to back and report the first error they encounter.
 For example, a map key whose marker is `c1` is `non_string_key`, because the key is
 read as a key before its marker is examined as a value. A duplicate key is detected
 only once its entry is complete, that is, after the value has been decoded. So in
-`82 a1 61 01 a1 61 c1` the error is `invalid_marker` at the value, not `duplicate_key`. For envelopes, the header order
-in §6 applies. The conformance vectors avoid cases where reasonable implementations
+`82 a1 61 01 a1 61 c1` the error is `invalid_marker` at the value, not `duplicate_key`.
+For envelopes, the header order in §6 applies. Tabular headers follow the order in
+§5.6.3. The value count (§7.1) is checked as each value starts. The conformance vectors avoid cases where reasonable implementations
 could disagree.
 
 Implementations SHOULD expose the error code as a machine-readable field on their error
 type.
+
+### 7.1 Resource limits
+
+A decoder MUST enforce the following limits. Each one is configurable:
+
+| Option | Default | When it's exceeded |
+|---|---|---|
+| `max_depth` | 128 (at most 1000) | `max_depth` |
+| `max_decompressed_size` | 64 MiB (67,108,864 bytes) | `size_limit` |
+| `max_values` | 1,048,576 (2^20) | `size_limit` |
+
+**Counting values.** `max_values` bounds how many values a document decodes to:
+
+- A value counts once, when the decoder starts it and before any value inside it. This
+  covers the top-level value, each array element, each map value, and each extension
+  value of any type. Map keys don't count.
+- A tabular array counts once when it starts. Once its header has been checked
+  (§5.6.3), its N row maps count, all together. Each cell then counts when it starts.
+- The values inside a compression envelope count. The envelopes themselves don't.
+
+A decoder MUST fail with `size_limit` as soon as the count exceeds `max_values`.
+
+**Tabular keys.** Decoders usually copy each column name into every row map. So a
+tabular array MUST be rejected with `size_limit` if N × Σ len(name_i) exceeds
+`max_decompressed_size` (§5.6.3). The copied keys then stay within what a plain array
+of maps could hold.
+
+**What the limits bound.** Together, they bound a decoder's memory: `max_values` times a
+per-value cost that depends on the implementation (about 100 to 500 bytes), plus the
+input and the decompressed payload. Pre-allocation is bounded by the same budget (§7).
+With the defaults, the measured worst case is about 0.7 GB: the JavaScript
+implementation's portable build decoding 2^20 empty float vectors. Applications that decode large tables raise `max_values`. Applications
+that decode untrusted input SHOULD keep the defaults, or lower them.
+
+An implementation whose runtime has a lower memory ceiling MAY use lower defaults, and
+MUST document them. PHP's `memory_limit` is an example: there, running out of memory is
+a fatal error, not an exception. Callers can always set any limit explicitly.
 
 ---
 
@@ -461,17 +525,22 @@ time **before** parsing the payload:
 Decoders without a key MUST treat input that starts with `"BTSG"` and is at least 40
 bytes long as a signed envelope, and reject it with `authentication_failed` rather than
 ignore the signature. Shorter inputs are parsed as bare documents, which fail because
-`42` is the integer 66 followed by trailing data. An *empty* key is a configuration
-error, not "no key": APIs SHOULD reject it with `invalid_argument`, or make "no key"
-expressible only as an absent value. The key is caller-supplied and SHOULD be at least
-32 random bytes.
+`42` is the integer 66 followed by trailing data.
+
+An *empty* key is a configuration error, not "no key". Encoders and decoders MUST reject
+it with `invalid_argument`, and "no key" MUST be expressible only as an absent value.
+Otherwise a key read from an empty file or variable would silently turn signing and
+verification off. The key is caller-supplied and SHOULD be at least 32 random bytes.
 
 ---
 
 ## 9. Security considerations
 
-- **Hostile input.** §7 is designed so that a decoder's memory and time are bounded by
-  input size × a small constant, plus `max_depth` stack frames.
+- **Hostile input.** §7 and §7.1 bound a decoder's work:
+  - memory, by `max_values` × a per-value constant plus the input and
+    `max_decompressed_size`;
+  - time, by the input and decompressed sizes;
+  - stack, by `max_depth` frames (at most 1000).
 - **Decompression bombs.** Zlib can expand about 1000×, and Zstd and Brotli far more.
   The `uncompressed_size` limit (§6) is the defense, and it must be enforced while
   decompressing, not only by trusting the header.
@@ -499,18 +568,56 @@ expressible only as an absent value. The key is caller-supplied and SHOULD be at
   "offset_minutes": m?}}`, `{"date": "<ms>"}`, `{"datetime": "<ns>"}`,
   `{"float32_vector": ["<decimal>", …]}`, `{"float64_vector": […]}`,
   `{"ext": {"type": t, "data": "<hex>"}}`.
-- `options` holds decoder options for that vector. Today the only one is `hmac_key`,
-  the key as hex. Vectors without `options` use the file's `defaults` (strict mode,
-  `max_depth` 128, `max_decompressed_size` 256 MiB). `note` is a comment for humans.
+- `options` holds decoder options for that vector:
+  - `hmac_key`, the key as hex (an empty string is an empty key, which is
+    `invalid_argument`);
+  - `strict`, `max_depth`, `max_decompressed_size` and `max_values`.
+
+  Vectors without `options` use the file's `defaults`: strict mode, `max_depth` 128,
+  `max_decompressed_size` 64 MiB and `max_values` 2^20. `note` is a comment for humans.
+- In `float32_vector` and `float64_vector`, `"NaN"` means the canonical quiet NaN of
+  that width (`7fc00000` or `7ff8000000000000`). A NaN with any other payload is written
+  as its bit pattern in hex, most significant byte first, prefixed with `0x`. For example,
+  `"0x7fa00000"` is a signaling binary32 NaN. In `float`, `"NaN"` matches any NaN,
+  because encoders canonicalize scalar NaNs (§4).
+- An `encode_error` vector gives a `value` that encoders MUST refuse, and the error
+  code.
 - **Every** implementation MUST decode every non-error vector to `value`.
-- Vectors with `"canonical": true` MUST also be re-encoded byte-for-byte from `value`.
+- Vectors with `"canonical": true` MUST also be re-encoded byte-for-byte from `value`. The
+  exception is a value the implementation has no native type for. JavaScript, for
+  example, can't tell the float `0.0` from the integer `0`, and it has no date type. Such
+  vectors MAY skip the re-encoding, but MUST still decode.
 - Error vectors MUST be rejected. Matching the `error` code is RECOMMENDED.
 - Vectors with `"requires": "<feature>"` (for example `"zstd"`) MAY be skipped by
   implementations without that feature.
 
 ---
 
-## 11. Changes from 0.0.x
+## 11. Changes
+
+### 11.1 From 0.1 to 0.2
+
+The wire format is unchanged: every valid 0.1 document that fits the new limits decodes
+to the same value. Decoders reject more hostile input, and encoders reject more invalid
+input.
+
+- Resource limits (§7.1):
+  - a document-wide `max_values`, default 2^20;
+  - the tabular key bound, N × Σ len(name) ≤ `max_decompressed_size`;
+  - `max_decompressed_size` now defaults to 64 MiB, down from 256 MiB;
+  - pre-allocation is bounded across nesting levels (§7);
+  - `max_depth` can't exceed 1000.
+- Edge cases where conforming decoders disagreed:
+  - zlib streams with FDICT set are `invalid_envelope`;
+  - map keys and column names must be valid UTF-8 in non-strict mode too, and keys are
+    compared by bytes;
+  - tabular column names are checked front to back (§5.6.3).
+- Encoders MUST reject raw extensions with the ids §5 defines (§5.7). APIs MUST reject an
+  empty HMAC key (§8).
+- Vector notation: NaN payloads in float vectors, the new decoder options, and
+  `encode_error` vectors (§10).
+
+### 11.2 From 0.0.x to 0.1
 
 Version 0.0.x had two contradictory spec documents, and an encoder that didn't match
 its decoder. 0.1 is the first version where the spec, the reference implementation,
