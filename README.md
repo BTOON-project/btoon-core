@@ -62,6 +62,25 @@ Decoding builds a full `btoon::Value` tree (`std::map`/`std::string`), and that 
 most of its time goes. Reproduce with
 `cmake -B build -DBUILD_BENCHMARKS=ON && cmake --build build && build/btoon_bench`.
 
+## Install
+
+The library is in [vcpkg](https://github.com/microsoft/vcpkg/tree/master/ports/btoon) as the
+`btoon` port (static library). Update your vcpkg clone if the port isn't found.
+
+```bash
+vcpkg install btoon                              # zlib envelopes
+vcpkg install "btoon[brotli,lz4,snappy,zstd]"    # every codec
+```
+
+```cmake
+find_package(btoon CONFIG REQUIRED)
+target_link_libraries(app PRIVATE btoon::btoon_core)
+```
+
+The `btoon` CLI is prebuilt for Linux (x64, arm64), macOS and Windows on the
+[latest release](https://github.com/BTOON-project/btoon-core/releases/latest). To build
+both yourself, see below.
+
 ## Build
 
 Requirements: a C++20 compiler (Clang 14+, GCC 11+, MSVC 2022), CMake 3.20+, zlib.
