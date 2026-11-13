@@ -1,5 +1,6 @@
-# Test fixtures and vectors are compared byte for byte, so check them out exactly as
-# committed on every platform (Windows runners default to core.autocrlf=true).
-tests/tools/*.json text eol=lf
+# Test fixtures, the CLI test script (its string literals become test input) and the
+# vectors are compared byte for byte, so check them out exactly as committed on every
+# platform. Windows runners default to core.autocrlf=true.
+tests/tools/* text eol=lf
 tests/tools/*.btoon binary
 tests/vectors/*.json text eol=lf
