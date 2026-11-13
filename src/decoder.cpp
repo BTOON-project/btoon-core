@@ -23,6 +23,7 @@ struct Reader {
     const uint8_t* end;
     const DecodeOptions* opts;
     const Security* types;  // non-null when type restrictions are active
+    size_t* reserve_left;   // the pre-allocation budget, shared by the whole document
 
     size_t remaining() const { return static_cast<size_t>(end - p); }
 
@@ -95,11 +96,26 @@ String read_key(Reader& r) {
     return read_str(r, n);
 }
 
+// Pre-allocation. A length check against the remaining input isn't enough on its own:
+// nested containers each check against the same remaining bytes, so 127 nested array32
+// headers could reserve 40 GiB. So every reservation draws on one budget for the whole
+// document, equal to its size in bytes. Every element of every container owns at least
+// one byte (an array element or tabular cell its first byte, a map entry its key, a
+// column name its length), so a valid document never exhausts the budget and always
+// reserves exactly. A container the budget doesn't cover starts empty and grows as its
+// elements decode; only input that is going to fail gets there, and its reservations
+// stay within the input's size at any depth.
+size_t reservation(Reader& r, size_t n) {
+    if (n > *r.reserve_left) return 0;
+    *r.reserve_left -= n;
+    return n;
+}
+
 Array read_array(Reader& r, size_t n, size_t depth) {
     if (depth >= r.opts->max_depth) r.error(ErrorCode::max_depth, "maximum nesting depth exceeded");
     if (n > r.remaining()) r.error(ErrorCode::truncated, "array length exceeds remaining input");
     Array a;
-    a.reserve(n);
+    a.reserve(reservation(r, n));
     for (size_t i = 0; i < n; ++i) a.push_back(read_value(r, depth + 1));
     return a;
 }
@@ -139,7 +155,7 @@ Value read_tabular(Reader& t, size_t depth) {
     if (num_cols > t.remaining() / 9) t.error(ErrorCode::invalid_tabular, "tabular column count exceeds payload");
 
     std::vector<String> names;
-    names.reserve(num_cols);
+    names.reserve(reservation(t, num_cols));
     for (uint32_t i = 0; i < num_cols; ++i) {
         need(4);
         uint32_t len = load_be32(t.p);
@@ -165,19 +181,22 @@ Value read_tabular(Reader& t, size_t depth) {
     if (uint64_t(num_rows) * uint64_t(num_cols) > t.remaining()) {
         t.error(ErrorCode::invalid_tabular, "tabular row count exceeds payload");
     }
+    // Rows are created while column 0 is read, one per decoded cell, so every row is
+    // backed by input already consumed. Creating num_rows maps up front let nested
+    // tabulars each allocate against the same bytes (2.6 GiB from a 1 MB input).
     Array rows;
-    rows.reserve(num_rows);
-    for (uint32_t r = 0; r < num_rows; ++r) rows.emplace_back(Map{});
+    rows.reserve(reservation(t, num_rows));
 
     for (uint32_t c = 0; c < num_cols; ++c) {
         need(4);
         uint32_t col_len = load_be32(t.p);
         t.p += 4;
         need(col_len);
-        Reader col{t.origin, t.p, t.p + col_len, t.opts, t.types};
+        Reader col{t.origin, t.p, t.p + col_len, t.opts, t.types, t.reserve_left};
         try {
             for (uint32_t r = 0; r < num_rows; ++r) {
                 Value v = read_value(col, depth + 2);
+                if (c == 0) rows.emplace_back(Map{});
                 auto& row = std::get<Map>(rows[r]);
                 row.emplace_hint(row.end(), names[c], std::move(v));
             }
@@ -264,7 +283,7 @@ Value read_ext(Reader& r, size_t len, size_t depth) {
             return Value(std::move(v));
         }
         case kExtTabular: {
-            Reader sub{r.origin, d, d + len, r.opts, r.types};
+            Reader sub{r.origin, d, d + len, r.opts, r.types, r.reserve_left};
             Value v = read_tabular(sub, depth);
             r.p += len;
             return v;
@@ -357,7 +376,8 @@ std::span<const uint8_t> Decoder::verify(std::span<const uint8_t> buffer, size_t
 
 std::pair<Value, size_t> Decoder::read(std::span<const uint8_t> data, bool whole) const {
     const Security* types = (security_ && security_->restrictsTypes()) ? &*security_ : nullptr;
-    Reader r{data.data(), data.data(), data.data() + data.size(), &options_, types};
+    size_t reserve_left = data.size();
+    Reader r{data.data(), data.data(), data.data() + data.size(), &options_, types, &reserve_left};
     Value v = read_value(r, 0);
     if (whole && r.p != r.end && options_.strict) r.error(ErrorCode::trailing_data, "trailing bytes after value");
     return {std::move(v), static_cast<size_t>(r.p - data.data())};

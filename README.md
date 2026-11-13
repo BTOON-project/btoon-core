@@ -147,8 +147,16 @@ cat data.json | btoon encode - - | btoon decode - - --compact
 
 BTOON types that JSON lacks round-trip as tagged objects, for example
 `{"$binary": "<base64>"}`, `{"$timestamp": "2024-01-01T00:00:00Z"}` and
-`{"$bigint": "…"}`. See `tools/json_mapping.h`. Also included: `btoon-convert` (JSON, CSV,
-MessagePack, XML out) and `btoon-schema` (validate, infer, diff, generate code).
+`{"$bigint": "…"}` (hex above 40,000 bytes). A map whose only key starts with `$` is
+written as `{"$map": {…}}`, so it can't be mistaken for a tag. Decoding BTOON to JSON and
+encoding it again gives the same bytes for every type. The rules are in
+[docs/btoon.1](docs/btoon.1) and `tools/json_mapping.h`. `btoon` and `btoon-convert` exit
+with 1 on a conversion or write error and 2 on a usage error, such as an empty
+`--hmac-key-file`.
+
+Also included: `btoon-convert` (BTOON, JSON, YAML, MessagePack and RFC 4180 CSV in; the
+same plus XML out; JSON uses the same mapping) and `btoon-schema` (validate, infer, diff,
+generate code).
 
 ## Layout
 
@@ -164,7 +172,7 @@ experimental/    design sketches that aren't built or installed
 
 ## Status
 
-Version **0.1.4** implements spec **0.1**. The format may still change before 1.0. When it
+Version **0.1.5** implements spec **0.1**. The format may still change before 1.0. When it
 does, the spec, the vectors and every library change together. Changes are tracked in
 [docs/CHANGELOG.md](docs/CHANGELOG.md).
 

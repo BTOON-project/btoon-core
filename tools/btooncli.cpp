@@ -3,16 +3,15 @@
 //
 // btoon — convert between JSON and BTOON, and inspect BTOON files.
 #include <cstring>
-#include <fstream>
 #include <iostream>
-#include <iterator>
 #include <optional>
-#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "btoon/btoon.h"
 #include "json_mapping.h"
+#include "tool_io.h"
 
 #ifdef _WIN32
 #include <fcntl.h>
@@ -23,6 +22,11 @@ using namespace btoon;
 using btoon::tools::json;
 
 namespace {
+
+/// Bad command line: exit status 2.
+struct UsageError : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
 
 void usage(std::ostream& out) {
     out << "btoon " << version() << " (format spec " << spec_version() << ")\n\n"
@@ -35,32 +39,17 @@ void usage(std::ostream& out) {
         << "  --compress[=ALGO]    Wrap output in a compression envelope (zlib, lz4, zstd, brotli, snappy;\n"
         << "                       default zlib). Decoding detects envelopes automatically.\n"
         << "  --no-tabular         Don't use the columnar encoding for arrays of objects\n"
-        << "  --hmac-key-file F    Sign (encode) or verify (decode) with the key in file F\n"
+        << "  --hmac-key-file F    Sign (encode) or verify (decode) with the key in file F (must not be empty)\n"
         << "  --compact            Decode to single-line JSON (default: indented)\n"
         << "  --no-tags            Treat {\"$binary\": ...}-style objects as plain maps\n\n"
         << "Non-JSON types are written as tagged objects, e.g. {\"$binary\": \"<base64>\"},\n"
-        << "{\"$timestamp\": \"2024-01-01T00:00:00Z\"}, {\"$bigint\": \"<decimal>\"}; see tools/json_mapping.h.\n";
+        << "{\"$timestamp\": \"2024-01-01T00:00:00Z\"}, {\"$bigint\": \"<decimal>\" or \"0x<hex>\"}; a map whose\n"
+        << "only key starts with \"$\" is written as {\"$map\": {...}}. See btoon(1) or tools/json_mapping.h.\n\n"
+        << "Exit status: 0 on success, 1 on a conversion or I/O error, 2 on a usage error.\n";
 }
 
-std::vector<uint8_t> read_all(const std::string& path) {
-    if (path == "-") {
-        std::cin >> std::noskipws;
-        return {std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>()};
-    }
-    std::ifstream in(path, std::ios::binary);
-    if (!in) throw std::runtime_error("cannot open " + path);
-    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-}
-
-void write_all(const std::string& path, const void* data, size_t n) {
-    if (path == "-") {
-        std::cout.write(static_cast<const char*>(data), static_cast<std::streamsize>(n));
-        std::cout.flush();
-        return;
-    }
-    std::ofstream out(path, std::ios::binary);
-    if (!out) throw std::runtime_error("cannot write " + path);
-    out.write(static_cast<const char*>(data), static_cast<std::streamsize>(n));
+std::span<const uint8_t> bytes_of(const std::string& s) {
+    return {reinterpret_cast<const uint8_t*>(s.data()), s.size()};
 }
 
 std::optional<CompressionAlgorithm> parse_algorithm(const std::string& name) {
@@ -88,14 +77,15 @@ void count(const Value& v, size_t depth, Counts& c) {
     }
 }
 
-int info(const std::vector<uint8_t>& bytes, const DecodeOptions& opts) {
+void info(const std::string& input, const DecodeOptions& opts) {
+    const auto bytes = bytes_of(input);
     std::cout << "size:        " << bytes.size() << " bytes\n";
-    std::span<const uint8_t> s(bytes);
+    std::span<const uint8_t> s = bytes;
     if (s.size() >= 40 && std::memcmp(s.data(), "BTSG", 4) == 0) {
         std::cout << "envelope:    signed (HMAC-SHA256)\n";
         if (opts.hmac_key.empty()) {
             std::cout << "             pass --hmac-key-file to verify and inspect the payload\n";
-            return 0;
+            return;
         }
         s = s.subspan(40);
     }
@@ -114,6 +104,70 @@ int info(const std::vector<uint8_t>& bytes, const DecodeOptions& opts) {
               << c.max_depth << "\n"
               << "as JSON:     " << as_json.size() << " bytes (BTOON is " << (100.0 * bytes.size() / as_json.size())
               << "% of that)\n";
+}
+
+int run(const std::vector<std::string>& args) {
+    const std::string cmd = args[0];
+    if (cmd == "--version" || cmd == "-v") {
+        std::cout << "btoon " << version() << " (format spec " << spec_version() << ")\n";
+        return tools::flush_stdout() ? 0 : 1;
+    }
+    if (cmd == "--help" || cmd == "-h" || cmd == "help") {
+        usage(std::cout);
+        return tools::flush_stdout() ? 0 : 1;
+    }
+    if (cmd != "encode" && cmd != "decode" && cmd != "info") throw UsageError("unknown command: " + cmd);
+
+    EncodeOptions eopts;
+    DecodeOptions dopts;
+    bool compact = false, tags = true;
+    std::vector<std::string> paths;
+    for (size_t i = 1; i < args.size(); ++i) {
+        const std::string& a = args[i];
+        if (a == "--compress") {
+            eopts.compress = true;
+        } else if (a.rfind("--compress=", 0) == 0) {
+            auto algo = parse_algorithm(a.substr(11));
+            if (!algo) throw UsageError("unknown compression algorithm: " + a.substr(11));
+            eopts.compress = true;
+            eopts.compression_algorithm = *algo;
+        } else if (a == "--no-tabular") {
+            eopts.auto_tabular = false;
+        } else if (a == "--compact") {
+            compact = true;
+        } else if (a == "--no-tags") {
+            tags = false;
+        } else if (a == "--hmac-key-file") {
+            if (i + 1 >= args.size()) throw UsageError("--hmac-key-file needs a file name");
+            const std::string& file = args[++i];
+            std::string key = tools::read_file(file);
+            // An empty key would mean "no HMAC": encode would sign nothing and decode
+            // would accept unsigned input (docs/SPEC.md §8).
+            if (key.empty()) throw UsageError("the HMAC key file " + file + " is empty");
+            eopts.hmac_key = key;
+            dopts.hmac_key = std::move(key);
+        } else if (a.size() > 1 && a[0] == '-') {
+            throw UsageError("unknown option: " + a);
+        } else {
+            paths.push_back(a);
+        }
+    }
+    const size_t max_paths = cmd == "info" ? 1 : 2;
+    if (paths.size() > max_paths) throw UsageError("too many arguments for " + cmd + ": " + paths[max_paths]);
+    while (paths.size() < 2) paths.push_back("-");
+
+    if (cmd == "encode") {
+        const json j = tools::parse_json(tools::read_file(paths[0]));
+        const auto out = encode(tools::from_json(j, tags), eopts);
+        tools::write_file(paths[1], std::string_view(reinterpret_cast<const char*>(out.data()), out.size()));
+    } else if (cmd == "decode") {
+        const std::string input = tools::read_file(paths[0]);
+        const std::string text = tools::to_json(decode(bytes_of(input), dopts)).dump(compact ? -1 : 2) + "\n";
+        tools::write_file(paths[1], text);
+    } else {
+        info(tools::read_file(paths[0]), dopts);
+    }
+    if (!tools::flush_stdout()) throw std::runtime_error("error writing to standard output");
     return 0;
 }
 
@@ -130,63 +184,11 @@ int main(int argc, char** argv) {
         usage(std::cerr);
         return 2;
     }
-    const std::string cmd = args[0];
-    if (cmd == "--version" || cmd == "-v") {
-        std::cout << "btoon " << version() << " (format spec " << spec_version() << ")\n";
-        return 0;
-    }
-    if (cmd == "--help" || cmd == "-h" || cmd == "help") {
-        usage(std::cout);
-        return 0;
-    }
-
-    EncodeOptions eopts;
-    DecodeOptions dopts;
-    bool compact = false, tags = true;
-    std::vector<std::string> paths;
     try {
-        for (size_t i = 1; i < args.size(); ++i) {
-            const std::string& a = args[i];
-            if (a == "--compress") {
-                eopts.compress = true;
-            } else if (a.rfind("--compress=", 0) == 0) {
-                auto algo = parse_algorithm(a.substr(11));
-                if (!algo) throw std::runtime_error("unknown compression algorithm: " + a.substr(11));
-                eopts.compress = true;
-                eopts.compression_algorithm = *algo;
-            } else if (a == "--no-tabular") {
-                eopts.auto_tabular = false;
-            } else if (a == "--compact") {
-                compact = true;
-            } else if (a == "--no-tags") {
-                tags = false;
-            } else if (a == "--hmac-key-file" && i + 1 < args.size()) {
-                auto key = read_all(args[++i]);
-                eopts.hmac_key.assign(key.begin(), key.end());
-                dopts.hmac_key = eopts.hmac_key;
-            } else if (a.size() > 1 && a[0] == '-' && a != "-") {
-                throw std::runtime_error("unknown option: " + a);
-            } else {
-                paths.push_back(a);
-            }
-        }
-        while (paths.size() < 2) paths.push_back("-");
-
-        if (cmd == "encode") {
-            auto text = read_all(paths[0]);
-            json j = json::parse(text.begin(), text.end());
-            auto out = encode(tools::from_json(j, tags), eopts);
-            write_all(paths[1], out.data(), out.size());
-        } else if (cmd == "decode") {
-            auto bytes = read_all(paths[0]);
-            std::string text = tools::to_json(decode(bytes, dopts)).dump(compact ? -1 : 2) + "\n";
-            write_all(paths[1], text.data(), text.size());
-        } else if (cmd == "info") {
-            return info(read_all(paths[0]), dopts);
-        } else {
-            usage(std::cerr);
-            return 2;
-        }
+        return run(args);
+    } catch (const UsageError& e) {
+        std::cerr << "btoon: " << e.what() << "\n(run 'btoon --help' for usage)\n";
+        return 2;
     } catch (const BtoonException& e) {
         std::cerr << "btoon: " << e.code_name() << ": " << e.what() << "\n";
         return 1;
@@ -194,5 +196,4 @@ int main(int argc, char** argv) {
         std::cerr << "btoon: " << e.what() << "\n";
         return 1;
     }
-    return 0;
 }

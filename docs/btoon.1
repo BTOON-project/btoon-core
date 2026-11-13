@@ -1,4 +1,4 @@
-.TH BTOON 1 "November 2026" "btoon 0.1.4" "User Commands"
+.TH BTOON 1 "November 2026" "btoon 0.1.5" "User Commands"
 .SH NAME
 btoon \- convert between JSON and the BTOON binary format
 .SH SYNOPSIS
@@ -23,12 +23,60 @@ BTOON is MessagePack with a columnar encoding for arrays of uniform objects, ext
 .B btoon
 converts JSON documents to canonical BTOON and back, and describes BTOON files.
 A missing or \fB\-\fR path means standard input/output.
+The mapping is lossless: decoding a canonical BTOON document to JSON and encoding the
+JSON again gives the same bytes, for every BTOON type.
+.SH JSON MAPPING
+JSON null, booleans, strings, arrays and objects map directly. Integers become BTOON
+integers, and integer literals outside the 64-bit range become big integers (literals
+beyond about 1e308 are rejected; write those as \fB$bigint\fR). Numbers with a fraction
+or an exponent become 64-bit floats.
 .PP
-Values JSON can't represent are written as single-key tagged objects, which are
-recognized again by \fBencode\fR:
-\fB{"$binary": "<base64>"}\fR, \fB{"$timestamp": "2024-01-01T00:00:00Z"}\fR (RFC 3339; the offset is kept),
-\fB{"$date": <ms>}\fR, \fB{"$datetime": "<ns>"}\fR, \fB{"$bigint": "<decimal>"}\fR,
-\fB{"$float": "NaN"}\fR, \fB{"$f32": [...]}\fR, \fB{"$f64": [...]}\fR, \fB{"$ext": [type, "<base64>"]}\fR.
+Values JSON can't represent are written as single-key tagged objects, which
+\fBencode\fR recognizes again:
+.TP
+\fB{"$binary": "\fIbase64\fB"}\fR
+Binary data. The base64 is decoded strictly (standard or URL-safe alphabet, padding
+optional).
+.TP
+\fB{"$timestamp": "2024-01-01T00:00:00.5Z"}\fR
+A timestamp in RFC 3339 form: \fIYYYY\fB\-\fIMM\fB\-\fIDD\fBT\fIhh\fB:\fImm\fB:\fIss\fR,
+an optional fraction of 1 to 9 digits, then \fBZ\fR (no offset) or
+\fB+\fIhh\fB:\fImm\fR / \fB\-\fIhh\fB:\fImm\fR (an offset of at most 18 hours, which is
+kept). The date must exist, and leap seconds and trailing text are rejected. Years
+outside 0000\(en9999 are written with a sign and at least six digits, for example
+\fB+010000\fR or \fB\-000001\fR.
+.TP
+\fB{"$date": \fImilliseconds\fB}\fR
+A date: an integer count of milliseconds since the Unix epoch.
+.TP
+\fB{"$datetime": "\fInanoseconds\fB"}\fR
+A datetime: nanoseconds since the Unix epoch, as a decimal string.
+.TP
+\fB{"$bigint": "\fIdecimal\fB"}\fR
+A big integer. Values longer than 40,000 bytes (about 96,000 digits) are written in hex
+instead, as \fB"0x\fR...\fB"\fR or \fB"\-0x\fR...\fB"\fR, which keeps conversion fast.
+Both forms are accepted. Decimal input is limited to 100,000 digits; use hex for more.
+.TP
+\fB{"$float": "NaN"}\fR, \fB"Infinity"\fR, \fB"\-Infinity"\fR
+Floats that JSON numbers can't hold. No other strings are accepted.
+.TP
+\fB{"$f32": [\fR...\fB]}\fR, \fB{"$f64": [\fR...\fB]}\fR
+Float32 and float64 vectors, as numbers and \fB$float\fR objects. A vector that holds a
+NaN other than the default quiet NaN is written as base64 of its little-endian payload,
+\fB{"$f32": "\fIbase64\fB"}\fR, so the NaN bits survive. Both forms are accepted.
+.TP
+\fB{"$ext": [\fItype\fB, "\fIbase64\fB"]}\fR
+An extension. The type is an integer from \-128 to 127, other than the ids BTOON defines
+itself (\-1 to \-6 and \-10).
+.TP
+\fB{"$map": {\fR...\fB}}\fR
+A map that would otherwise read as a tag. Every map whose only key starts with \fB$\fR
+is written this way, so that a map such as \fB{"$binary": "x"}\fR round-trips.
+.PP
+A single-key object whose key is one of these tags is always that tag, and malformed
+content is an error. Other keys that start with \fB$\fR are ordinary keys. Values nest
+at most 128 levels deep, as in BTOON itself (tag objects don't count); deeper input fails
+with \fBmax_depth\fR.
 .SH OPTIONS
 .TP
 .BR \-\-compress [ =\fIALGO\fR ]
@@ -43,7 +91,8 @@ Disable the columnar encoding. The output is then plain canonical MessagePack.
 .BI \-\-hmac\-key\-file " FILE"
 When encoding, sign with HMAC-SHA256 using the bytes of
 .IR FILE .
-When decoding, require and verify a signature made with that key.
+When decoding, require and verify a signature made with that key. An empty file is an
+error, because an empty key would mean no signature at all.
 .TP
 .B \-\-compact
 Write single-line JSON when decoding.
@@ -51,8 +100,10 @@ Write single-line JSON when decoding.
 .B \-\-no\-tags
 Don't interpret \fB$\fR-tagged objects when encoding.
 .SH EXIT STATUS
-0 on success, 1 on a conversion error (the message includes the BTOON error code, for
-example \fBtruncated\fR or \fBauthentication_failed\fR), and 2 on a usage error.
+0 on success. 1 on a conversion or I/O error, including an output that can't be written
+(a full disk, a closed standard output); the message includes the BTOON error code, for
+example \fBtruncated\fR, \fBmax_depth\fR or \fBauthentication_failed\fR. 2 on a usage
+error, such as an unknown option or an empty key file.
 .SH EXAMPLES
 .nf
 btoon encode data.json data.btoon \-\-compress
@@ -61,6 +112,7 @@ btoon info data.btoon
 cat data.json | btoon encode \- \- | btoon decode \- \- \-\-compact
 .fi
 .SH SEE ALSO
-.BR btoon\-convert (1),
-.BR btoon\-schema (1).
-The format specification is at https://github.com/BTOON-project/btoon-core/blob/main/docs/SPEC.md
+.BR btoon\-convert " and " btoon\-schema
+(run them with \fB\-\-help\fR).
+The mapping is implemented in tools/json_mapping.h. The format specification is at
+https://github.com/BTOON-project/btoon-core/blob/main/docs/SPEC.md

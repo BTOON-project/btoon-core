@@ -5,6 +5,87 @@ All notable changes to BTOON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-11-13
+
+### Security
+- **Schema patterns crashed on long strings.** `pattern` constraints used `std::regex`.
+  libstdc++ and MSVC match recursively, one stack frame per character, so validating a
+  30 KB string crashed the process with any pattern, and a 100 KB `version` string
+  crashed `Schema::fromValue`.
+  - Patterns now run on a built-in matcher (Thompson NFA, Pike VM). It takes linear time
+    and doesn't recurse on the text; the supported syntax is in API.md.
+  - Version strings are parsed by hand.
+- **Nested containers pre-allocated against the same input at every level.** 1 MB of
+  nested array headers reserved 5 GB, and nested tabulars built 2.6 GB.
+  - Reservations now draw on one budget per document, equal to its size. Every element
+    owns at least one byte, so a valid document never exhausts it. A container it
+    doesn't cover starts empty and grows as its elements decode.
+  - Tabular rows are created as their cells are read.
+  - The same inputs now peak at 100 MB and 176 MB. A single large array still reserves
+    exactly, so legitimate documents don't pay for reallocation.
+- **`RleCodec` and `DictionaryCodec` could expand 100 KB into about 1 GB.** One run, or
+  one-byte indices, copied a large value many times. `decode()` gains a `max_bytes` limit
+  (default 256 MiB) on the decoded data's estimated memory.
+- **`utils::BufferReader` bounds checks could wrap.** `readBytes(SIZE_MAX)` passed the
+  check and read out of bounds.
+
+### Fixed
+- `Schema::validate`:
+  - optional fields that are present are validated;
+  - `min`/`max` compare exactly across `Int`, `Uint`, `Float` and `BigInt` (before, a
+    `Uint` or `Float` value skipped an `Int` bound);
+  - NaN fails any bound;
+  - broken constraints throw `invalid_argument` when the schema is built.
+- `Validator`:
+  - byte input is decoded with the options' `max_depth` and size limit;
+  - signed documents validate given the new `ValidationOptions::hmac_key`;
+  - timestamps before 1970 or after 2100 are valid;
+  - `validate(std::vector<uint8_t>)` is no longer ambiguous.
+- `RleCodec` kept `0.0` and `-0.0` in one run, so `-0.0` decoded as `0.0`.
+- `utils::crc32` had two wrong table entries, so 23% of inputs differed from zlib.
+  The table is now generated at compile time.
+- `utils::decodeVarint` silently dropped bits above 64. It now throws.
+
+### Fixed: the command-line tools
+- **btoon-convert corrupted data and exited 0** (review 2026-11-13, critical):
+  - integers above INT64_MAX came out negative;
+  - date, datetime, bigint, vectors and NaN/±Inf became `null`;
+  - timestamps lost their fractions.
+
+  btoon-convert and btoon-schema now use the `btoon` CLI's lossless JSON mapping, so
+  every type round-trips byte for byte.
+- **Deeply nested JSON crashed all three tools** (100k `[` overflowed the stack).
+  - Parsing is now non-recursive (SAX).
+  - Conversion stops at 128 BTOON levels with a `max_depth` error.
+- **bigint ↔ decimal conversion was quadratic per byte.** A 16 KB bigint took 55 s; it
+  now takes 0.16 s with 32-bit limbs. Values above 40,000 bytes are written as exact
+  hex (`"0x…"`); both forms are accepted, and decimal input over 100,000 digits is
+  refused.
+- **`btoon --hmac-key-file` with an empty file signed nothing and verified nothing**,
+  exiting 0. It's now a usage error (exit 2).
+- **The JSON mapping is strict:**
+  - `$float` accepts only `NaN`, `Infinity` and `-Infinity`;
+  - `$ext` ids must be in −128…127 and not one of BTOON's own types;
+  - `$timestamp` is strict RFC 3339, with no overflow at extreme years;
+  - a one-key map whose key starts with `$` is written as `{"$map": …}`, so it can't be
+    mistaken for a tag;
+  - NaN payloads inside vectors are kept;
+  - integers beyond 64 bits become bigints instead of floats.
+- **btoon-convert's other formats:**
+  - CSV follows RFC 4180, and only strict JSON numbers become numbers ("Nan", "0x10"
+    stay strings);
+  - XML output is escaped;
+  - batch output paths are checked;
+  - bad numeric options are usage errors.
+- All tools exit nonzero when the output can't be written (a full disk, a closed pipe).
+- `SchemaInferrer`'s min/max are the extreme values themselves, compared exactly.
+  Before, they went through `double`, and UINT64_MAX overflowed when cast back.
+
+### Changed
+- `pattern` supports the ECMAScript subset listed in API.md. Back-references, lookaround
+  and `\p{…}` were accepted by `std::regex` and are now rejected when the schema is built.
+  Patterns match code points, so `.` matches one UTF-8 character, not one byte.
+
 ## [0.1.4] - 2026-11-13
 
 ### Security

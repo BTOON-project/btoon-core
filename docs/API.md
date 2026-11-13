@@ -83,7 +83,7 @@ Value back = decode(bytes, {.max_decompressed_size = 16 << 20});
 ```
 
 Other functions: `is_tabular(const Array&)` reports whether the encoder would use the
-columnar form. `version()` returns `"0.1.4"` and `spec_version()` returns `"0.1"`.
+columnar form. `version()` returns `"0.1.5"` and `spec_version()` returns `"0.1"`.
 
 ## Errors
 
@@ -207,17 +207,54 @@ LZ4 block payloads can only be decompressed when you supply `expected_size`.
   can `validate(value)`, list errors with `validateWithErrors`, check
   `isCompatibleWith`, and round-trip through `toValue()`/`fromValue()`.
   `SchemaRegistry` stores versions.
+- Validation:
+  - Required fields must be present.
+  - Every present field, required or optional, must have its type and meet its
+    constraints (a map such as `{"min": 0, "max": 10, "pattern": "[a-z]+", "enum": [...]}`).
+  - `min` and `max` apply to numbers and compare exactly across `Int`, `Uint`, `Float`
+    and `BigInt`. NaN never satisfies them.
+- A constraint that can't be evaluated throws `invalid_argument` when the schema is
+  built or parsed, not during validation: a non-numeric `min`/`max`, or a `pattern` that
+  isn't a string or doesn't compile.
+- `pattern`:
+  - The whole string must match, as with `std::regex_match`.
+  - Matching runs in linear time and never recurses on the string, so untrusted values
+    are safe.
+  - The syntax is the common ECMAScript subset: literals, `.`, `^`, `$`, `\b`, `|`,
+    groups (`(…)`, `(?:…)`, `(?<name>…)`), the quantifiers `* + ? {n} {n,} {n,m}` (lazy
+    forms too), classes `[…]` and `[^…]`, and the escapes `\d \w \s \D \W \S \t \n \xHH
+    \uHHHH \u{…}`.
+  - Back-references, lookaround and `\p{…}` are rejected.
+  - It matches code points, and `\d`, `\w` and `\b` are ASCII.
+  - Limits: patterns up to 4 KB, repetition counts up to 1000, and 10,000 compiled
+    states.
+- `SchemaVersion::fromString` accepts `MAJOR.MINOR.PATCH` with uint32 parts and throws
+  `invalid_argument` otherwise.
 - `SchemaInferrer(InferenceOptions{...}).inferFromArray(rows)` derives a schema from
   data. Integer fields infer as `"int"`. Mixed numeric fields become `"number"` when
   `merge_numeric_types` is set.
-- `Validator(ValidationOptions{...}).validate(bytes)` checks structure without building
-  values. It also offers `UTF8Validator`, `TypeValidator` and `SecurityValidator`.
+- `Validator(ValidationOptions{...}).validate(bytes)` decodes the bytes and checks the
+  result against the options.
+  - Decoding is strict, with `max_depth`, a decompression limit of
+    `min(max_total_size, kDefaultMaxDecompressedSize)`, and `hmac_key` for signed
+    documents. An empty key is an error.
+  - Strict decoding always rejects duplicate keys and invalid UTF-8.
+    `allow_duplicate_map_keys` and `require_utf8_strings` matter only for
+    `validate(value)`.
+  - It also offers `UTF8Validator`, `TypeValidator` and `SecurityValidator`.
 
 ## Utility codecs (`<btoon/delta_codec.h>`, `rle_codec.h`, `dictionary_codec.h`)
 
 `DeltaCodec`, `RleCodec` and `DictionaryCodec` turn an `Array` into a compact sequence of
 BTOON values and back. They are standalone helpers, not part of the wire format.
-`decode()` takes a `max_elements` cap, default 2^24.
+`decode()` takes two caps:
+- `max_elements`, default 2^24;
+- `max_bytes`, default 256 MiB, on the decoded data's estimated memory: one `Value` per
+  node plus string and binary bytes. A run or dictionary index copies a whole value, so
+  this bounds what a few bytes can expand to.
+
+Exceeding either fails with `size_limit`. RLE runs hold values with identical canonical
+encodings, so `0.0` and `-0.0` stay apart.
 
 ## C API (`<btoon/capi.h>`)
 

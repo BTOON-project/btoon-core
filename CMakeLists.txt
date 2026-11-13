@@ -83,6 +83,7 @@ set(BTOON_SOURCES
     src/stream_encoder.cpp
     src/stream_decoder.cpp
     src/schema.cpp
+    src/pattern.cpp
     src/memory_pool.cpp
     src/validator.cpp
     src/zero_copy.cpp
@@ -110,7 +111,7 @@ set(BTOON_PUBLIC_HEADERS
     include/btoon/zero_copy.h
 )
 
-add_library(btoon_core ${BTOON_SOURCES} ${BTOON_PUBLIC_HEADERS} src/internal.h)
+add_library(btoon_core ${BTOON_SOURCES} ${BTOON_PUBLIC_HEADERS} src/internal.h src/pattern.h)
 add_library(btoon::btoon_core ALIAS btoon_core)
 set_target_properties(btoon_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -264,6 +265,7 @@ if(BUILD_TESTS)
         tests/test_compression_levels.cpp
         tests/test_validator.cpp
         tests/test_codecs.cpp
+        tests/test_pattern.cpp
     )
     target_link_libraries(btoon_tests PRIVATE btoon_core GTest::gtest GTest::gtest_main)
     target_include_directories(btoon_tests PRIVATE include/third_party src)
@@ -281,6 +283,27 @@ if(BUILD_TESTS)
         BTOON_VECTORS_FILE="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/btoon-vectors.json")
     target_include_directories(btoon_fuzz_smoke PRIVATE include/third_party)
     add_test(NAME fuzz_smoke COMMAND btoon_fuzz_smoke 20000)
+
+    # tools/json_mapping.h: the JSON <-> BTOON mapping of the CLI tools (header-only).
+    add_executable(btoon_tools_tests tests/test_json_mapping.cpp)
+    target_link_libraries(btoon_tools_tests PRIVATE btoon_core GTest::gtest GTest::gtest_main)
+    target_include_directories(btoon_tools_tests PRIVATE include/third_party tools)
+    target_compile_definitions(btoon_tools_tests PRIVATE
+        BTOON_VECTORS_FILE="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/btoon-vectors.json")
+    gtest_discover_tests(btoon_tools_tests DISCOVERY_TIMEOUT 60)
+
+    # The built tools on the fixtures in tests/tools: round trips of every type, deep
+    # JSON, an empty key file, failed writes. tests/tools/make_fixtures.py writes them.
+    if(BUILD_TOOLS)
+        add_test(NAME tools_cli
+            COMMAND ${CMAKE_COMMAND}
+                -DBTOON=$<TARGET_FILE:btoon>
+                -DCONVERT=$<TARGET_FILE:btoon-convert>
+                -DSCHEMA=$<TARGET_FILE:btoon-schema>
+                -DFIXTURES=${CMAKE_CURRENT_SOURCE_DIR}/tests/tools
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/tools_cli
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/run_tools_test.cmake)
+    endif()
 
     # Vectors are generated independently by tests/vectors/generate.py (msgpack-python oracle).
 endif()

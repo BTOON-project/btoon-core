@@ -568,3 +568,53 @@ TEST(ZeroCopyCApi, ViewsOwnTheirMapping) {
     EXPECT_FALSE(SharedMemoryBuffer::create(name, 4096, false)) << "closing the creator's view removes it";
 }
 #endif
+
+// Review 2026-11-13 (X1): nested containers each pre-allocated against the same remaining
+// bytes. 127 nested array32 headers reserved 40 GiB, and 64 nested tabulars built 2.6 GiB
+// from 1 MB. Both must now fail cheaply.
+TEST(Hardening, NestedHeadersDoNotPreallocate) {
+    std::vector<uint8_t> doc;
+    for (int i = 0; i < 127; ++i) {
+        doc.push_back(0xdd);  // array32 claiming almost all remaining input
+        const uint32_t n = static_cast<uint32_t>(1 << 20);
+        for (int s = 24; s >= 0; s -= 8) doc.push_back(static_cast<uint8_t>(n >> s));
+    }
+    doc.resize(doc.size() + (1 << 20), 0xc0);
+    DecodeOptions opts;
+    opts.max_depth = 1000;
+    try {
+        decode(doc, opts);
+        ADD_FAILURE() << "accepted";
+    } catch (const BtoonException& e) {
+        EXPECT_NE(e.code(), ErrorCode::generic);
+    }
+}
+
+TEST(Hardening, NestedTabularsDoNotPreallocateRows) {
+    // A one-column tabular whose first cell is another tabular, 64 deep, each claiming as
+    // many rows as its payload could hold.
+    auto put32 = [](std::vector<uint8_t>& b, uint32_t v) {
+        for (int s = 24; s >= 0; s -= 8) b.push_back(static_cast<uint8_t>(v >> s));
+    };
+    std::vector<uint8_t> inner(16384, 0xc0);  // 16k nil cells
+    for (int level = 0; level < 64; ++level) {
+        std::vector<uint8_t> payload;
+        put32(payload, 1);  // version
+        put32(payload, 1);  // one column
+        const auto rows = static_cast<uint32_t>(inner.size());
+        put32(payload, rows);  // claims one row per byte of the column
+        put32(payload, 1);
+        payload.push_back('c');
+        payload.push_back(0);  // type code
+        put32(payload, static_cast<uint32_t>(inner.size()));
+        payload.insert(payload.end(), inner.begin(), inner.end());
+        std::vector<uint8_t> ext{0xc9};
+        put32(ext, static_cast<uint32_t>(payload.size()));
+        ext.push_back(0xf6);  // -10: tabular
+        ext.insert(ext.end(), payload.begin(), payload.end());
+        inner = std::move(ext);
+    }
+    DecodeOptions opts;
+    opts.max_depth = 1000;
+    EXPECT_THROW(decode(inner, opts), BtoonException);
+}
