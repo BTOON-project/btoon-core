@@ -5,6 +5,34 @@ All notable changes to BTOON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-11-13
+
+### Security
+- **`Decoder` ignored `DecodeOptions::hmac_key`.** `Decoder(DecodeOptions{.hmac_key = key})`
+  returned unsigned, possibly forged input instead of failing with
+  `authentication_failed`. `decode_and_get_pos()` and `StreamDecoder` did the same.
+  `btoon::decode()` was not affected. A `Decoder` now verifies the signed envelope
+  whenever it has a key, from a `Security` object or from `hmac_key`.
+- **Dangling `Security` reference.** `Decoder` and `Encoder` kept a pointer to the
+  `Security` object they were given, so `Decoder dec{Security{key}}` read a destroyed
+  object. They now keep a copy. As a result, changing the `Security` object afterwards
+  no longer affects them.
+
+### Changed
+- `Decoder::decode()` opens envelopes exactly like `btoon::decode()`, which now
+  delegates to it. It decompresses a compression envelope, and without a key it rejects
+  a signed envelope with `authentication_failed`. Before, it read both envelopes as
+  bare data; in non-strict mode the result was the integer 66. `decode_and_get_pos()`
+  still reads bare values. As a side effect, `Validator::validate()` and `sanitize()`
+  now accept compressed documents.
+- `StreamEncoder` throws `invalid_argument` when `compress` or `hmac_key` is set, and
+  `StreamDecoder` when `hmac_key` is set. They used to ignore them, but a stream holds
+  bare documents only.
+- `Encoder` still writes the bare document and doesn't apply `compress` or `hmac_key`.
+  This is now documented: `encode()` and `apply_envelopes()` add the envelopes.
+
+The wire format is unchanged.
+
 ## [0.1.3] - 2026-11-08
 
 ### Security

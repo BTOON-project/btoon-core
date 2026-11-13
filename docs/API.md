@@ -83,7 +83,7 @@ Value back = decode(bytes, {.max_decompressed_size = 16 << 20});
 ```
 
 Other functions: `is_tabular(const Array&)` reports whether the encoder would use the
-columnar form. `version()` returns `"0.1.3"` and `spec_version()` returns `"0.1"`.
+columnar form. `version()` returns `"0.1.4"` and `spec_version()` returns `"0.1"`.
 
 ## Errors
 
@@ -132,7 +132,11 @@ Use `encode(const Value&)` for whole values. Output methods:
 - `release()` moves the buffer out.
 - `size()` and `clear()` do what they say.
 
-`Encoder(const Security&)` wraps the output in a signed envelope when it is finalized.
+The `Encoder` writes the bare document. It doesn't apply `compress` or `hmac_key` from
+`EncodeOptions`: `encode()` does, and `apply_envelopes(enc.release(), options)` adds them
+to an incrementally encoded document. `Encoder(const Security&)` is the exception: it
+wraps the output in a signed envelope when it is finalized. The `Security` object is
+copied.
 
 ## Decoder (`<btoon/decoder.h>`)
 
@@ -142,12 +146,21 @@ Value v = dec.decode(bytes);                               // whole buffer, one 
 auto [first, used] = dec.decode_and_get_pos(stream);       // one value; trailing bytes allowed
 ```
 
-The `Decoder` handles bare documents, plus signed envelopes when constructed with a
-`Security`. Compression envelopes are handled by the free `decode()`.
+`decode()` reads a complete document exactly like the free `decode()`. It verifies and
+removes a signed envelope, then decompresses a compression envelope. With a key, from
+`DecodeOptions::hmac_key` or a `Security` object (which is copied), input must be signed.
+Without one, signed input fails with `authentication_failed`.
+
+`decode_and_get_pos()` reads bare values, because `BTON` and `BTSG` are also valid
+bare values in a stream. When the decoder has a key, though, the buffer must be a signed
+envelope, and the value is read from its verified payload.
 
 ## Streams (`<btoon/stream_encoder.h>`, `<btoon/stream_decoder.h>`)
 
-A stream is a sequence of bare documents written back to back.
+A stream is a sequence of bare documents written back to back. Envelopes can't be used
+in a stream: their magic bytes are also valid bare values, so a reader couldn't tell where a
+document ends. `StreamEncoder` therefore throws `invalid_argument` if `compress` or
+`hmac_key` is set, and `StreamDecoder` does if `hmac_key` is set.
 
 ```cpp
 std::ofstream out("events.btoon", std::ios::binary);

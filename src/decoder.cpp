@@ -338,37 +338,46 @@ Value read_value(Reader& r, size_t depth) {
 Decoder::Decoder() = default;
 Decoder::Decoder(const DecodeOptions& options) : options_(options) {}
 Decoder::Decoder(MemoryPool* /*pool*/) {}
-Decoder::Decoder(const Security& security) : security_(&security), useSecurity_(true) {}
-Decoder::Decoder(const Security& security, MemoryPool* /*pool*/)
-    : security_(&security), useSecurity_(true) {}
+Decoder::Decoder(const Security& security) : security_(security), useSecurity_(true) {}
+Decoder::Decoder(const Security& security, MemoryPool* /*pool*/) : security_(security), useSecurity_(true) {}
 Decoder::~Decoder() = default;
 
-std::span<const uint8_t> Decoder::unwrap(std::span<const uint8_t> buffer, size_t* header_len) const {
+std::span<const uint8_t> Decoder::verify(std::span<const uint8_t> buffer, size_t* header_len) const {
     *header_len = 0;
-    if (useSecurity_ && security_ != nullptr) {
+    if (useSecurity_) {
         *header_len = Security::kEnvelopeHeaderSize;
         return security_->unwrap(buffer);
+    }
+    if (!options_.hmac_key.empty()) {
+        *header_len = Security::kEnvelopeHeaderSize;
+        return Security(options_.hmac_key).unwrap(buffer);
     }
     return buffer;
 }
 
-Value Decoder::decode(std::span<const uint8_t> buffer) const {
-    size_t header = 0;
-    auto data = unwrap(buffer, &header);
-    const Security* types = (security_ && security_->restrictsTypes()) ? security_ : nullptr;
+std::pair<Value, size_t> Decoder::read(std::span<const uint8_t> data, bool whole) const {
+    const Security* types = (security_ && security_->restrictsTypes()) ? &*security_ : nullptr;
     Reader r{data.data(), data.data(), data.data() + data.size(), &options_, types};
     Value v = read_value(r, 0);
-    if (r.p != r.end && options_.strict) r.error(ErrorCode::trailing_data, "trailing bytes after value");
-    return v;
+    if (whole && r.p != r.end && options_.strict) r.error(ErrorCode::trailing_data, "trailing bytes after value");
+    return {std::move(v), static_cast<size_t>(r.p - data.data())};
+}
+
+Value Decoder::decode(std::span<const uint8_t> buffer) const {
+    size_t header = 0;
+    std::span<const uint8_t> bytes = verify(buffer, &header);
+    if (header == 0 && Security::is_signed_envelope(bytes) && bytes.size() >= Security::kEnvelopeHeaderSize) {
+        fail(ErrorCode::authentication_failed, "input is signed but no HMAC key was provided");
+    }
+    std::vector<uint8_t> decompressed;
+    bytes = open_compression_envelope(bytes, options_, decompressed);
+    return read(bytes, true).first;
 }
 
 std::pair<Value, size_t> Decoder::decode_and_get_pos(std::span<const uint8_t> buffer) const {
     size_t header = 0;
-    auto data = unwrap(buffer, &header);
-    const Security* types = (security_ && security_->restrictsTypes()) ? security_ : nullptr;
-    Reader r{data.data(), data.data(), data.data() + data.size(), &options_, types};
-    Value v = read_value(r, 0);
-    return {std::move(v), header + static_cast<size_t>(r.p - data.data())};
+    auto [value, used] = read(verify(buffer, &header), false);
+    return {std::move(value), header + used};
 }
 
 } // namespace btoon

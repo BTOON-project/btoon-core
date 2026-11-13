@@ -94,45 +94,35 @@ std::vector<uint8_t> encode(const Value& value, const EncodeOptions& options) {
     return apply_envelopes(encoder.release(), options);
 }
 
-Value decode(std::span<const uint8_t> data, const DecodeOptions& options) {
-    std::span<const uint8_t> bytes = data;
-    std::optional<Security> security;
-    if (!options.hmac_key.empty()) {
-        security.emplace(options.hmac_key);
-        bytes = security->unwrap(bytes);
-    } else if (Security::is_signed_envelope(bytes) && bytes.size() >= Security::kEnvelopeHeaderSize) {
-        fail(ErrorCode::authentication_failed, "input is signed but no HMAC key was provided");
+std::span<const uint8_t> detail::open_compression_envelope(std::span<const uint8_t> bytes,
+                                                          const DecodeOptions& options,
+                                                          std::vector<uint8_t>& storage) {
+    if (!is_compressed_envelope(bytes) || bytes.size() < kCompressionHeaderSize) return bytes;
+    if (!options.auto_decompress) {
+        fail(ErrorCode::invalid_envelope, "input is compressed but auto_decompress is disabled");
     }
-
-    std::vector<uint8_t> decompressed;
-    if (is_compressed_envelope(bytes) && bytes.size() >= kCompressionHeaderSize) {
-        if (!options.auto_decompress) {
-            fail(ErrorCode::invalid_envelope, "input is compressed but auto_decompress is disabled");
-        }
-        const uint8_t* h = bytes.data();
-        const uint8_t version = h[4];
-        const auto algo = static_cast<CompressionAlgorithm>(h[5]);
-        const uint16_t reserved = load_be16(h + 6);
-        const uint32_t compressed_size = load_be32(h + 8);
-        const uint32_t uncompressed_size = load_be32(h + 12);
-        if (version != kCompressionVersion) fail(ErrorCode::invalid_envelope, "unsupported compression envelope version");
-        if (reserved != 0) fail(ErrorCode::invalid_envelope, "compression envelope reserved bytes must be zero");
-        if (compressed_size != bytes.size() - kCompressionHeaderSize) {
-            fail(ErrorCode::invalid_envelope, "compressed size does not match the envelope length");
-        }
-        if (uncompressed_size > options.max_decompressed_size) {
-            fail(ErrorCode::size_limit, "declared uncompressed size exceeds max_decompressed_size");
-        }
-        if (h[5] > static_cast<uint8_t>(CompressionAlgorithm::SNAPPY)) {
-            fail(ErrorCode::unsupported_compression, "unknown compression algorithm id " + std::to_string(h[5]));
-        }
-        decompressed = decompress(algo, bytes.subspan(kCompressionHeaderSize), uncompressed_size);
-        bytes = decompressed;
+    const uint8_t* h = bytes.data();
+    const uint8_t version = h[4];
+    const auto algo = static_cast<CompressionAlgorithm>(h[5]);
+    const uint16_t reserved = load_be16(h + 6);
+    const uint32_t compressed_size = load_be32(h + 8);
+    const uint32_t uncompressed_size = load_be32(h + 12);
+    if (version != kCompressionVersion) fail(ErrorCode::invalid_envelope, "unsupported compression envelope version");
+    if (reserved != 0) fail(ErrorCode::invalid_envelope, "compression envelope reserved bytes must be zero");
+    if (compressed_size != bytes.size() - kCompressionHeaderSize) {
+        fail(ErrorCode::invalid_envelope, "compressed size does not match the envelope length");
     }
-
-    Decoder decoder(options);
-    return decoder.decode(bytes);
+    if (uncompressed_size > options.max_decompressed_size) {
+        fail(ErrorCode::size_limit, "declared uncompressed size exceeds max_decompressed_size");
+    }
+    if (h[5] > static_cast<uint8_t>(CompressionAlgorithm::SNAPPY)) {
+        fail(ErrorCode::unsupported_compression, "unknown compression algorithm id " + std::to_string(h[5]));
+    }
+    storage = decompress(algo, bytes.subspan(kCompressionHeaderSize), uncompressed_size);
+    return storage;
 }
+
+Value decode(std::span<const uint8_t> data, const DecodeOptions& options) { return Decoder(options).decode(data); }
 
 bool is_tabular(const Array& arr) { return tabular_layout(arr, nullptr); }
 

@@ -16,9 +16,8 @@ using namespace detail;
 Encoder::Encoder() = default;
 Encoder::Encoder(const EncodeOptions& options) : options_(options) {}
 Encoder::Encoder(MemoryPool* /*pool*/) {}
-Encoder::Encoder(const Security& security) : security_(&security), useSecurity_(true) {}
-Encoder::Encoder(const Security& security, MemoryPool* /*pool*/)
-    : security_(&security), useSecurity_(true) {}
+Encoder::Encoder(const Security& security) : security_(security), useSecurity_(true) {}
+Encoder::Encoder(const Security& security, MemoryPool* /*pool*/) : security_(security), useSecurity_(true) {}
 Encoder::~Encoder() = default;
 
 void Encoder::grow(size_t n) {
@@ -505,7 +504,7 @@ void Encoder::finalize() {
     if (finalized_) return;
     if (!tabular_.empty()) fail(ErrorCode::invalid_argument, "unterminated tabular section");
     finalized_ = true;
-    if (useSecurity_ && security_ != nullptr) {
+    if (useSecurity_) {
         auto envelope = security_->wrap({buf_.data(), len_});
         buf_ = std::move(envelope);
         len_ = buf_.size();
