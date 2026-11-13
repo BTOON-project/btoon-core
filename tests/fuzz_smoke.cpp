@@ -21,6 +21,7 @@ int main(int argc, char** argv) {
     std::ifstream in(BTOON_VECTORS_FILE);
     auto doc = nlohmann::json::parse(in);
     for (const auto& v : doc.at("vectors")) {
+        if (!v.contains("hex")) continue;  // encode_error vectors have no bytes
         auto bytes = vtest::unhex(v.at("hex").get<std::string>());
         if (!bytes.empty() && bytes.size() < 4096) corpus.push_back(std::move(bytes));
     }

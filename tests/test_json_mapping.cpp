@@ -75,16 +75,23 @@ TEST(JsonMapping, ConformanceVectorsRoundTrip) {
     const auto doc = nlohmann::json::parse(in);
     size_t checked = 0;
     for (const auto& v : doc.at("vectors")) {
-        if (v.contains("error")) continue;
+        if (v.contains("error") || v.contains("encode_error")) continue;  // nothing to round-trip
         if (v.contains("requires") && !feature_available(v.at("requires"))) continue;
         const std::string id = v.at("id");
         SCOPED_TRACE("vector " + id);
         DecodeOptions dopts;
         EncodeOptions eopts;
-        if (v.contains("options") && v.at("options").contains("hmac_key")) {
-            const auto key = vtest::unhex(v.at("options").at("hmac_key").get<std::string>());
-            dopts.hmac_key.assign(key.begin(), key.end());
-            eopts.hmac_key = dopts.hmac_key;
+        if (v.contains("options")) {  // decoder options a vector can set (docs/SPEC.md §10)
+            const auto& o = v.at("options");
+            if (o.contains("hmac_key")) {
+                const auto key = vtest::unhex(o.at("hmac_key").get<std::string>());
+                dopts.hmac_key = std::string(key.begin(), key.end());
+                eopts.hmac_key = dopts.hmac_key;
+            }
+            if (o.contains("strict")) dopts.strict = o.at("strict").get<bool>();
+            if (o.contains("max_depth")) dopts.max_depth = o.at("max_depth").get<size_t>();
+            if (o.contains("max_decompressed_size")) dopts.max_decompressed_size = o.at("max_decompressed_size").get<size_t>();
+            if (o.contains("max_values")) dopts.max_values = o.at("max_values").get<size_t>();
         }
         const auto bytes = vtest::unhex(v.at("hex").get<std::string>());
         const Value decoded = decode(bytes, dopts);

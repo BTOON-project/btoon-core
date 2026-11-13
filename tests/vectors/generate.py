@@ -29,7 +29,7 @@ from pathlib import Path
 
 import msgpack
 
-SPEC_VERSION = "0.1"
+SPEC_VERSION = "0.2"
 HMAC_KEY = b"btoon-conformance-key-0123456789"  # 32 bytes
 
 
@@ -62,6 +62,42 @@ class F64Vec:
 class Ext:
     def __init__(self, type_: int, data: bytes):
         self.type, self.data = type_, data
+
+
+class Bits32:
+    """A float32 vector element given by its exact bit pattern (NaN payloads, §5.5)."""
+    def __init__(self, bits: int):
+        self.bits = bits
+
+
+class Bits64:
+    """A float64 vector element given by its exact bit pattern (NaN payloads, §5.5)."""
+    def __init__(self, bits: int):
+        self.bits = bits
+
+
+MAX_DEPTH = 128
+FLT_MAX = struct.unpack("<f", struct.pack("<I", 0x7F7FFFFF))[0]
+# A float64 at or above this rounds to infinity as binary32 (round to nearest, ties to even).
+F32_OVERFLOW = FLT_MAX + 2.0 ** 103
+
+
+def f32_bytes(x) -> bytes:
+    """Little-endian binary32 for a vector element, as every library writes it: values
+    beyond the binary32 range round to ±Infinity (struct.pack would raise OverflowError)."""
+    if isinstance(x, Bits32):
+        return struct.pack("<I", x.bits)
+    if math.isfinite(x) and abs(x) > FLT_MAX:
+        if abs(x) >= F32_OVERFLOW:
+            return struct.pack("<f", math.copysign(math.inf, x))
+        return struct.pack("<f", math.copysign(FLT_MAX, x))
+    return struct.pack("<f", x)
+
+
+def f64_bytes(x) -> bytes:
+    if isinstance(x, Bits64):
+        return struct.pack("<Q", x.bits)
+    return struct.pack("<d", x)
 
 
 INT_MIN, UINT_MAX = -(2**63), 2**64 - 1
@@ -138,7 +174,11 @@ def tabular_keys(arr: list):
     return keys if len(arr) * per_row > overhead else None
 
 
-def enc(v, tabular=True) -> bytes:
+def enc(v, tabular=True, depth=0) -> bytes:
+    """Canonical encoding. Like the libraries, it refuses values the spec forbids: nesting
+    deeper than max_depth (§7) and out-of-range timestamps (§5.1)."""
+    if isinstance(v, (list, dict)) and depth >= MAX_DEPTH:
+        raise ValueError(f"max_depth: nesting deeper than {MAX_DEPTH}")
     if v is None or isinstance(v, bool):
         return msgpack.packb(v)
     if isinstance(v, int):
@@ -156,16 +196,22 @@ def enc(v, tabular=True) -> bytes:
     if isinstance(v, list):
         keys = tabular_keys(v) if tabular else None
         if keys:
-            return enc_tabular(v, keys, tabular)
+            if depth + 1 >= MAX_DEPTH:
+                raise ValueError(f"max_depth: a tabular array needs two levels (§7)")
+            return enc_tabular(v, keys, tabular, depth)
         p = msgpack.Packer()
-        return p.pack_array_header(len(v)) + b"".join(enc(x, tabular) for x in v)
+        return p.pack_array_header(len(v)) + b"".join(enc(x, tabular, depth + 1) for x in v)
     if isinstance(v, dict):
         p = msgpack.Packer()
         out = p.pack_map_header(len(v))
         for k in sorted(v.keys(), key=ukey):
-            out += msgpack.packb(k) + enc(v[k], tabular)
+            out += msgpack.packb(k) + enc(v[k], tabular, depth + 1)
         return out
     if isinstance(v, TS):
+        if not 0 <= v.nanoseconds < 10**9:
+            raise ValueError("timestamp nanoseconds out of range (§5.1)")
+        if v.offset is not None and not -1080 <= v.offset <= 1080:
+            raise ValueError("timestamp offset beyond ±1080 minutes (§5.1)")
         if v.offset is not None:
             return ext(-1, struct.pack(">Iqh", v.nanoseconds, v.seconds, v.offset))
         return msgpack.packb(msgpack.Timestamp(v.seconds, v.nanoseconds))
@@ -174,9 +220,9 @@ def enc(v, tabular=True) -> bytes:
     if isinstance(v, DateTime):
         return ext(-3, struct.pack(">q", v.ns))
     if isinstance(v, F32Vec):
-        return ext(-5, struct.pack("<%df" % len(v.values), *v.values))
+        return ext(-5, b"".join(f32_bytes(x) for x in v.values))
     if isinstance(v, F64Vec):
-        return ext(-6, struct.pack("<%dd" % len(v.values), *v.values))
+        return ext(-6, b"".join(f64_bytes(x) for x in v.values))
     if isinstance(v, Ext):
         return ext(v.type, v.data)
     raise TypeError(type(v))
@@ -185,14 +231,14 @@ def enc(v, tabular=True) -> bytes:
 _TABULAR_EMITTED = [0]
 
 
-def enc_tabular(rows: list, keys: list, tabular=True) -> bytes:
+def enc_tabular(rows: list, keys: list, tabular=True, depth=0) -> bytes:
     _TABULAR_EMITTED[0] += 1
     payload = struct.pack(">III", 1, len(keys), len(rows))
     for k in keys:
         payload += struct.pack(">I", len(ukey(k))) + ukey(k)
     payload += bytes(type_code(rows[0][k]) for k in keys)
     for k in keys:
-        col = b"".join(enc(r[k], tabular) for r in rows)
+        col = b"".join(enc(r[k], tabular, depth + 2) for r in rows)
         payload += struct.pack(">I", len(col)) + col
     return ext(-10, payload)
 
@@ -216,6 +262,16 @@ def fstr(x: float) -> str:
     if math.isinf(x):
         return "Infinity" if x > 0 else "-Infinity"
     return repr(x)
+
+
+def vec_elem(raw: bytes, int_fmt: str, canonical_nan: int, float_fmt: str) -> str:
+    """A vector element in the §10 notation: "NaN" only for the canonical quiet NaN, and
+    any other NaN as its bit pattern in hex."""
+    bits = struct.unpack(int_fmt, raw)[0]
+    x = struct.unpack(float_fmt, raw)[0]
+    if math.isnan(x) and bits != canonical_nan:
+        return "0x%0*x" % (len(raw) * 2, bits)
+    return fstr(x)
 
 
 def typed(v):
@@ -245,9 +301,9 @@ def typed(v):
     if isinstance(v, DateTime):
         return {"datetime": str(v.ns)}
     if isinstance(v, F32Vec):
-        return {"float32_vector": [fstr(x) for x in v.values]}
+        return {"float32_vector": [vec_elem(f32_bytes(x), "<I", 0x7FC00000, "<f") for x in v.values]}
     if isinstance(v, F64Vec):
-        return {"float64_vector": [fstr(x) for x in v.values]}
+        return {"float64_vector": [vec_elem(f64_bytes(x), "<Q", 0x7FF8000000000000, "<d") for x in v.values]}
     if isinstance(v, Ext):
         return {"ext": {"type": v.type, "data": v.data.hex()}}
     raise TypeError(type(v))
@@ -297,6 +353,14 @@ def invalid(id_: str, hex_: str, error: str, note: str | None = None, **extra):
     if note:
         e["note"] = note
     e.update(extra)
+    _add(e)
+
+
+def encode_error(id_: str, value, error: str, note: str | None = None):
+    """A value that encoders must refuse (§10)."""
+    e = {"id": id_, "value": typed(value), "encode_error": error}
+    if note:
+        e["note"] = note
     _add(e)
 
 
@@ -599,7 +663,13 @@ def build():
     invalid("envelope/uncompressed-size-mismatch", envelope(0, z, len(raw) + 1).hex(), "invalid_envelope")
     invalid("envelope/corrupt-zlib", envelope(0, b"\x78\x9c" + bytes(10), len(raw)).hex(), "invalid_envelope")
     invalid("envelope/size-limit", envelope(0, z, 256 * 1024 * 1024 + 1).hex(), "size_limit",
-            note="checked before decompressing (default limit 256 MiB)")
+            note="checked before decompressing")
+    invalid("envelope/size-limit-default", envelope(0, z, 64 * 1024 * 1024 + 1).hex(), "size_limit",
+            note="the default max_decompressed_size is 64 MiB (§7.1)")
+    invalid("envelope/zlib-fdict", envelope(0, zlib_with_fdict(enc("hello")), len(enc("hello"))).hex(),
+            "invalid_envelope", note="FDICT set, here with DICTID = adler32 of an empty dictionary (§6)")
+    invalid("envelope/max-values", envelope(0, zlib.compress(enc([1, 2, 3])), len(enc([1, 2, 3]))).hex(),
+            "size_limit", options={"max_values": 3}, note="values inside an envelope count (§7.1)")
     invalid("envelope/unknown-algorithm", envelope(9, z, len(raw)).hex(), "unsupported_compression")
     invalid("envelope/nested", envelope(0, zlib.compress(envelope(0, z, len(raw))),
                                         len(envelope(0, z, len(raw)))).hex(), "trailing_data",
@@ -633,6 +703,82 @@ def build():
             note="without a key, inputs shorter than 40 bytes are bare documents: 0x42 = 66, then trailing bytes")
     invalid("signed/bad-version", signed(enc(1))[:4].hex() + "02" + signed(enc(1))[5:].hex(), "invalid_envelope",
             options={"hmac_key": key_hex})
+    invalid("signed/empty-key", signed(enc(1)).hex(), "invalid_argument", options={"hmac_key": ""},
+            note="an empty key is a configuration error, not \"no key\" (§8)")
+    invalid("signed/empty-key-unsigned-input", enc(1).hex(), "invalid_argument", options={"hmac_key": ""})
+
+    build_02()
+
+
+def build_02():
+    """Vectors added in spec 0.2 (§11.1)."""
+    # --- NaN payloads in float vectors (§5.5, §10) -------------------------------------
+    canonical("vector-f32/nan", F32Vec([math.nan, 1.0]), "d7fb0000c07f0000803f")
+    canonical("vector-f32/nan-payloads", F32Vec([Bits32(0x7FA00001), Bits32(0xFFC00000)]),
+              note="NaN payloads inside vectors are kept bit for bit (§5.5)")
+    canonical("vector-f32/infinities", F32Vec([math.inf, -math.inf]))
+    canonical("vector-f64/nan", F64Vec([math.nan]))
+    canonical("vector-f64/nan-payloads", F64Vec([Bits64(0x7FF0000000000001), Bits64(0xFFF8000000000000)]))
+
+    # --- tabular names, front to back (§5.6.3) --------------------------------------
+    def tab(names, nrows=1, cells=b"\xc0"):
+        return ext(-10, tabular_payload(names, [0] * len(names), [cells * nrows] * len(names), nrows)).hex()
+
+    invalid("tabular/duplicate-before-invalid-utf8", tab(["a", "a", b"\xff"]), "invalid_tabular",
+            note="names are checked in order: the duplicate comes first")
+    invalid("tabular/invalid-utf8-before-duplicate", tab([b"\xff", "a", "a"]), "invalid_utf8")
+
+    # --- keys must be UTF-8 in non-strict mode too (§7) -----------------------------
+    nonstrict = {"strict": False}
+    invalid("nonstrict/invalid-utf8-key", "81a1ff01", "invalid_utf8", options=nonstrict)
+    invalid("nonstrict/invalid-utf8-keys-would-merge", "82a1ff01a1fe02", "invalid_utf8", options=nonstrict,
+            note="replacing both keys with U+FFFD would merge them and drop a value")
+    invalid("nonstrict/invalid-utf8-column-name", tab([b"\xff"]), "invalid_utf8", options=nonstrict)
+    invalid("nonstrict/duplicate-column-name", tab(["a", "a"]), "invalid_tabular", options=nonstrict)
+
+    # --- max_values (§7.1) -----------------------------------------------------------
+    def limits(id_, hex_, value, n, note=None):
+        decode_only(f"limits/{id_}-at-limit", hex_, value, note=note, options={"max_values": n})
+        invalid(f"limits/{id_}-over-limit", hex_, "size_limit", options={"max_values": n - 1})
+
+    limits("array", "93010203", [1, 2, 3], 4, note="the array and its three elements")
+    limits("map", "81a1619101", {"a": [1]}, 3, note="map keys don't count")
+    limits("nested", "9291019102", [[1], [2]], 5)
+    two_rows = ext(-10, tabular_payload(["a", "b"], [2, 2], [b"\x01\x02", b"\x03\x04"], 2)).hex()
+    limits("tabular", two_rows, [{"a": 1, "b": 3}, {"a": 2, "b": 4}], 7,
+           note="1 array + 2 row maps + 4 cells; column names don't count")
+    invalid("limits/tabular-rows-counted-at-header",
+            ext(-10, tabular_payload(["a"], [0], [b"\xc1\xc0"], 2)).hex(), "size_limit",
+            options={"max_values": 2}, note="the row maps count once the header is checked, before any cell")
+    invalid("limits/counted-when-value-starts", "9201c1", "size_limit", options={"max_values": 2},
+            note="the third value exceeds the limit before its marker is examined")
+    invalid("limits/counted-before-truncation", "81a161", "size_limit", options={"max_values": 1},
+            note="the map's value counts when it would start, even though the input has ended")
+    invalid("limits/announced-length-checked-first", "9201", "truncated", options={"max_values": 2},
+            note="the array's announced length is checked against the input before any element starts")
+
+    # --- tabular key bytes: N × Σ len(name) ≤ max_decompressed_size (§7.1) -----------
+    keyed = ext(-10, tabular_payload(["abcd", "efgh"], [0, 0], [b"\xc0" * 4, b"\xc0" * 4], 4)).hex()
+    decode_only("limits/tabular-key-bytes-at-limit", keyed, [{"abcd": None, "efgh": None}] * 4,
+                options={"max_decompressed_size": 32}, note="4 rows × 8 bytes of names")
+    invalid("limits/tabular-key-bytes-over-limit", keyed, "size_limit", options={"max_decompressed_size": 31})
+
+    # --- raw extensions with ids BTOON defines (§5.7) --------------------------------
+    for t, payload in [(-1, bytes(4)), (-2, bytes(8)), (-3, bytes(8)), (-4, b"\x05"), (-5, bytes(4)),
+                       (-6, bytes(8)), (-10, struct.pack(">III", 1, 0, 0))]:
+        encode_error(f"encode/raw-ext{t}", Ext(t, payload), "invalid_argument",
+                     note="written verbatim, this could be malformed or non-canonical")
+    canonical("ext/future-id-written-as-given", Ext(-11, b"\x01"), "d4f501",
+              note="ids reserved for future versions pass through (§5.7)")
+
+
+def zlib_with_fdict(data: bytes) -> bytes:
+    """A zlib stream (RFC 1950) whose header sets FDICT with the empty dictionary's DICTID."""
+    cmf, flg = 0x78, 0x20
+    flg += (31 - ((cmf << 8) | flg) % 31) % 31
+    c = zlib.compressobj(wbits=-15)
+    raw = c.compress(data) + c.flush()
+    return bytes([cmf, flg]) + struct.pack(">I", zlib.adler32(b"")) + raw + struct.pack(">I", zlib.adler32(data))
 
 
 def _nested(depth: int):
@@ -663,7 +809,7 @@ def main():
     out = {
         "spec": SPEC_VERSION,
         "description": "BTOON conformance vectors. See docs/SPEC.md §10. Generated by tests/vectors/generate.py.",
-        "defaults": {"max_depth": 128, "max_decompressed_size": 268435456, "strict": True},
+        "defaults": {"max_depth": 128, "max_decompressed_size": 67108864, "max_values": 1048576, "strict": True},
         "vectors": VECTORS,
     }
     path = Path(__file__).with_name("btoon-vectors.json")
@@ -679,9 +825,12 @@ def main():
         print(f"btoon-vectors.json is up to date ({len(stable(fresh))} stable vectors compared)")
         return
     path.write_text(json.dumps(out, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
-    kinds = {"canonical": 0, "decode-only": 0, "invalid": 0}
+    kinds = {"canonical": 0, "decode-only": 0, "invalid": 0, "encode-error": 0}
     for v in VECTORS:
-        kinds["invalid" if "error" in v else "canonical" if v["canonical"] else "decode-only"] += 1
+        if "encode_error" in v:
+            kinds["encode-error"] += 1
+        else:
+            kinds["invalid" if "error" in v else "canonical" if v["canonical"] else "decode-only"] += 1
     print(f"wrote {path} ({len(VECTORS)} vectors: {kinds})")
 
 

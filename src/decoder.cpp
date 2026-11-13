@@ -9,6 +9,7 @@
 #include "internal.h"
 
 #include <algorithm>
+#include <set>
 #include <string_view>
 
 namespace btoon {
@@ -23,6 +24,7 @@ struct Reader {
     const uint8_t* end;
     const DecodeOptions* opts;
     const Security* types;  // non-null when type restrictions are active
+    size_t* values_left;    // the max_values budget, shared by the whole document
     size_t* reserve_left;   // the pre-allocation budget, shared by the whole document
 
     size_t remaining() const { return static_cast<size_t>(end - p); }
@@ -78,6 +80,14 @@ Binary read_bin(Reader& r, size_t n) {
     return b;
 }
 
+// Charges `n` values against max_values (docs/SPEC.md §7.1).
+void count_values(Reader& r, size_t n) {
+    if (BTOON_UNLIKELY(n > *r.values_left)) {
+        r.error(ErrorCode::size_limit, "document decodes to more values than max_values");
+    }
+    *r.values_left -= n;
+}
+
 String read_key(Reader& r) {
     uint8_t m = r.u8();
     size_t n;
@@ -93,7 +103,13 @@ String read_key(Reader& r) {
         --r.p;
         r.error(ErrorCode::non_string_key, "map key is not a string");
     }
-    return read_str(r, n);
+    // Keys must be UTF-8 in non-strict mode too: they're compared by their bytes, and a
+    // decoder that replaced invalid sequences could merge distinct keys (§7).
+    r.need(n);
+    if (!is_valid_utf8(r.p, n)) r.error(ErrorCode::invalid_utf8, "map key is not valid UTF-8");
+    String s(reinterpret_cast<const char*>(r.p), n);
+    r.p += n;
+    return s;
 }
 
 // Pre-allocation. A length check against the remaining input isn't enough on its own:
@@ -104,9 +120,12 @@ String read_key(Reader& r) {
 // column name its length), so a valid document never exhausts the budget and always
 // reserves exactly. A container the budget doesn't cover starts empty and grows as its
 // elements decode; only input that is going to fail gets there, and its reservations
-// stay within the input's size at any depth.
+// stay within the input's size at any depth. A container that announces more elements
+// than the max_values budget has left can't be decoded either (each element counts), so
+// it doesn't reserve: otherwise a 64 MiB array32 of nils, a 64 KB zlib envelope, could
+// reserve 64M Values (2.5 GB) before the budget stops it.
 size_t reservation(Reader& r, size_t n) {
-    if (n > *r.reserve_left) return 0;
+    if (n > *r.reserve_left || n > *r.values_left) return 0;
     *r.reserve_left -= n;
     return n;
 }
@@ -154,25 +173,24 @@ Value read_tabular(Reader& t, size_t depth) {
     // Each column needs ≥ 9 bytes (name length, type code, column length).
     if (num_cols > t.remaining() / 9) t.error(ErrorCode::invalid_tabular, "tabular column count exceeds payload");
 
+    // Names are checked front to back (§5.6.3): each must be UTF-8, in non-strict mode
+    // too, and differ from every earlier name. The first failing name sets the error.
+    // An ordered set keeps this O(C log C) without exposure to hash flooding.
     std::vector<String> names;
     names.reserve(reservation(t, num_cols));
+    std::set<std::string_view> seen;
+    uint64_t name_bytes = 0;
     for (uint32_t i = 0; i < num_cols; ++i) {
         need(4);
         uint32_t len = load_be32(t.p);
         t.p += 4;
         need(len);
-        if (t.opts->strict && !is_valid_utf8(t.p, len)) {
-            t.error(ErrorCode::invalid_utf8, "column name is not valid UTF-8");
-        }
-        names.emplace_back(reinterpret_cast<const char*>(t.p), len);
+        const std::string_view name(reinterpret_cast<const char*>(t.p), len);
+        if (!is_valid_utf8(t.p, len)) t.error(ErrorCode::invalid_utf8, "column name is not valid UTF-8");
+        if (!seen.insert(name).second) t.error(ErrorCode::invalid_tabular, "duplicate column name");
+        names.emplace_back(name);
+        name_bytes += len;
         t.p += len;
-    }
-    {
-        std::vector<std::string_view> sorted(names.begin(), names.end());
-        std::sort(sorted.begin(), sorted.end());
-        if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end()) {
-            t.error(ErrorCode::invalid_tabular, "duplicate column name");
-        }
     }
     need(num_cols);
     t.p += num_cols;  // type codes are informational (§5.6.1)
@@ -181,6 +199,13 @@ Value read_tabular(Reader& t, size_t depth) {
     if (uint64_t(num_rows) * uint64_t(num_cols) > t.remaining()) {
         t.error(ErrorCode::invalid_tabular, "tabular row count exceeds payload");
     }
+    // Each row map gets a copy of every name: bound those bytes like a plain array of maps
+    // would be bounded (§7.1). Both factors are below 2^32, so the product can't overflow.
+    if (uint64_t(num_rows) * name_bytes > uint64_t(t.opts->max_decompressed_size)) {
+        t.error(ErrorCode::size_limit, "tabular column names copied into every row exceed max_decompressed_size");
+    }
+    // The N row maps count once the header is checked; each cell counts as it starts.
+    count_values(t, num_rows);
     // Rows are created while column 0 is read, one per decoded cell, so every row is
     // backed by input already consumed. Creating num_rows maps up front let nested
     // tabulars each allocate against the same bytes (2.6 GiB from a 1 MB input).
@@ -192,7 +217,7 @@ Value read_tabular(Reader& t, size_t depth) {
         uint32_t col_len = load_be32(t.p);
         t.p += 4;
         need(col_len);
-        Reader col{t.origin, t.p, t.p + col_len, t.opts, t.types, t.reserve_left};
+        Reader col{t.origin, t.p, t.p + col_len, t.opts, t.types, t.values_left, t.reserve_left};
         try {
             for (uint32_t r = 0; r < num_rows; ++r) {
                 Value v = read_value(col, depth + 2);
@@ -283,7 +308,7 @@ Value read_ext(Reader& r, size_t len, size_t depth) {
             return Value(std::move(v));
         }
         case kExtTabular: {
-            Reader sub{r.origin, d, d + len, r.opts, r.types, r.reserve_left};
+            Reader sub{r.origin, d, d + len, r.opts, r.types, r.values_left, r.reserve_left};
             Value v = read_tabular(sub, depth);
             r.p += len;
             return v;
@@ -344,6 +369,7 @@ Value read_value_impl(Reader& r, size_t depth) {
 }
 
 Value read_value(Reader& r, size_t depth) {
+    count_values(r, 1);  // a value counts when it starts, before anything inside it (§7.1)
     if (BTOON_LIKELY(r.types == nullptr)) return read_value_impl(r, depth);
     Value v = read_value_impl(r, depth);
     if (!r.types->isTypeAllowed(v.index())) {
@@ -361,23 +387,35 @@ Decoder::Decoder(const Security& security) : security_(security), useSecurity_(t
 Decoder::Decoder(const Security& security, MemoryPool* /*pool*/) : security_(security), useSecurity_(true) {}
 Decoder::~Decoder() = default;
 
+// Options that can't be honored fail before any input is read.
+static void check_decode_options(const DecodeOptions& options) {
+    if (options.max_depth > kMaxDepthLimit) {
+        fail(ErrorCode::invalid_argument, "max_depth is above " + std::to_string(kMaxDepthLimit));
+    }
+    if (options.hmac_key && options.hmac_key->empty()) {
+        fail(ErrorCode::invalid_argument, "the HMAC key is empty; leave hmac_key unset for no key");
+    }
+}
+
 std::span<const uint8_t> Decoder::verify(std::span<const uint8_t> buffer, size_t* header_len) const {
+    check_decode_options(options_);
     *header_len = 0;
     if (useSecurity_) {
         *header_len = Security::kEnvelopeHeaderSize;
         return security_->unwrap(buffer);
     }
-    if (!options_.hmac_key.empty()) {
+    if (options_.hmac_key) {
         *header_len = Security::kEnvelopeHeaderSize;
-        return Security(options_.hmac_key).unwrap(buffer);
+        return Security(*options_.hmac_key).unwrap(buffer);
     }
     return buffer;
 }
 
 std::pair<Value, size_t> Decoder::read(std::span<const uint8_t> data, bool whole) const {
     const Security* types = (security_ && security_->restrictsTypes()) ? &*security_ : nullptr;
+    size_t values_left = options_.max_values;
     size_t reserve_left = data.size();
-    Reader r{data.data(), data.data(), data.data() + data.size(), &options_, types, &reserve_left};
+    Reader r{data.data(), data.data(), data.data() + data.size(), &options_, types, &values_left, &reserve_left};
     Value v = read_value(r, 0);
     if (whole && r.p != r.end && options_.strict) r.error(ErrorCode::trailing_data, "trailing bytes after value");
     return {std::move(v), static_cast<size_t>(r.p - data.data())};

@@ -115,6 +115,8 @@ public:
     void clear() noexcept;
 
 private:
+    // Writes an extension header without the §5.7 check, for the typed encoders.
+    void writeExtensionHeader(int8_t type, size_t length);
     void encodeValue(const Value& value, size_t depth);
     void encodeArrayValue(const Array& array, size_t depth);
     void encodeMapValue(const Map& map, size_t depth);

@@ -5,6 +5,47 @@ All notable changes to BTOON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-14
+
+Implements spec 0.2 (docs/SPEC.md §11.1). The wire format is unchanged: every valid 0.1
+document that fits the new limits decodes to the same value. Decisions D23–D26 in the
+workspace's docs/DECISIONS.md record why.
+
+### Security
+- **Decoding has a memory budget (D23, SPEC §7.1).** A few KB of compressed input could
+  make the decoder allocate gigabytes. Three limits now apply:
+  - `DecodeOptions::max_values` (default 2^20) bounds the values a document decodes to.
+    Every value counts, including each tabular row and cell; map keys don't.
+  - The column-name bytes a table copies into its rows (rows × Σ name lengths) can't
+    exceed `max_decompressed_size`.
+  - `max_decompressed_size` now defaults to 64 MiB, down from 256 MiB.
+
+  Pre-allocation is capped by the remaining value budget too. On the review's inputs:
+  - an 8 KB zlib envelope of empty maps fails with `size_limit` at a 112 MB peak;
+  - a 58 KB envelope announcing 60M elements fails at 288 MB instead of reserving
+    2.5 GB;
+  - a 97-byte tabular key bomb fails before allocating (258 MB in 0.1.4);
+  - a valid one-million-map document still decodes in 44 MB.
+- **An empty HMAC key is an error (D25, SPEC §8).** `EncodeOptions::hmac_key` and
+  `DecodeOptions::hmac_key` are now `std::optional<std::string>`. `std::nullopt` means no
+  key, and an empty key throws `invalid_argument` instead of turning signing and
+  verification off. Assignments such as `opts.hmac_key = key` still compile.
+- `max_depth` above 1000 (`kMaxDepthLimit`) throws `invalid_argument` (SPEC §7).
+
+### Changed
+- In non-strict mode, map keys and tabular column names must still be valid UTF-8
+  (SPEC §7). Keys compare by bytes, and replacing invalid sequences could merge them.
+- Tabular column names are checked front to back: each one for UTF-8, then for
+  duplicates. The first failing name sets the error (SPEC §5.6.3).
+- `Encoder::encodeExtension`, `encodeExtensionHeader` and `Value(Extension)` reject the
+  ids BTOON defines (-1…-6 and -10) with `invalid_argument` (SPEC §5.7). Encode those
+  types from their typed values. Ids reserved for future versions are written as given.
+- The vectors (296) add:
+  - NaN payloads in float vectors;
+  - limit cases with the new decoder options;
+  - FDICT;
+  - non-strict key rules;
+  - `encode_error` cases.
 ## [0.1.5] - 2026-11-13
 
 ### Security
