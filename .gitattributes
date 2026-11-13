@@ -1,0 +1,5 @@
+# Test fixtures and vectors are compared byte for byte, so check them out exactly as
+# committed on every platform (Windows runners default to core.autocrlf=true).
+tests/tools/*.json text eol=lf
+tests/tools/*.btoon binary
+tests/vectors/*.json text eol=lf

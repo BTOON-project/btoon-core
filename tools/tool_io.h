@@ -13,7 +13,22 @@
 #include <string>
 #include <string_view>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 namespace btoon::tools {
+
+/// Puts standard input and output in binary mode. On Windows, text mode turns "\n" into
+/// "\r\n" on output and stops reading binary input at the first 0x1A, so BTOON passed
+/// through a pipe would be corrupted. Call it first thing in main().
+inline void use_binary_stdio() {
+#ifdef _WIN32
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
+}
 
 inline std::string read_stream(std::istream& in, const std::string& name) {
     std::string out;

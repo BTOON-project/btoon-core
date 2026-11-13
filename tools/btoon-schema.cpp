@@ -44,6 +44,7 @@ Schema load_schema_file(const std::string& path);
 std::string value_to_json_string(const Value& v, bool pretty = true);
 
 int main(int argc, char* argv[]) {
+    btoon::tools::use_binary_stdio();
     if (argc < 2) {
         print_usage(argv[0]);
         return 1;

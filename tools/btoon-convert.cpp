@@ -717,6 +717,7 @@ int run(int argc, char* argv[]) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+    tools::use_binary_stdio();
     try {
         const int rc = run(argc, argv);
         if (!tools::flush_stdout()) {
