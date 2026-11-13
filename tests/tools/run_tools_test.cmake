@@ -74,17 +74,19 @@ function(contains name file regex)
     endif()
 endfunction()
 
-# expect_text(<name> <file> <text>): the file holds exactly this text. (Compared as
-# files, because file(READ) drops carriage returns.)
+# expect_text(<name> <file> <text>): the file holds exactly these bytes. Compared in hex:
+# file(WRITE) writes in text mode on Windows ("\n" becomes "\r\n"), and file(READ) can drop
+# carriage returns, so neither can produce or check exact bytes on every platform.
 function(expect_text name file expected)
-    string(MAKE_C_IDENTIFIER "${name}" id)
-    file(WRITE "${W}/expected-${id}.txt" "${expected}")
-    execute_process(COMMAND "${CMAKE_COMMAND}" -E compare_files "${file}" "${W}/expected-${id}.txt" RESULT_VARIABLE rc)
     if(NOT EXISTS "${file}")
         message(SEND_ERROR "${name}: ${file} is missing")
-    elseif(NOT rc EQUAL 0)
+        return()
+    endif()
+    file(READ "${file}" actual_hex HEX)
+    string(HEX "${expected}" expected_hex)
+    if(NOT actual_hex STREQUAL expected_hex)
         file(READ "${file}" text)
-        message(SEND_ERROR "${name}: ${file} is\n${text}\nexpected (see expected-${id}.txt)\n${expected}")
+        message(SEND_ERROR "${name}: ${file} is\n${text}\nexpected\n${expected}\n(hex ${actual_hex}\n vs ${expected_hex})")
     endif()
 endfunction()
 
@@ -220,11 +222,9 @@ endif()
 
 # --- btoon-convert: CSV, XML, arguments, batch mode -----------------------------------------
 
-file(WRITE "${W}/people.csv"
-     "name,code,note,count,flag,empty,quoted\n"
-     "Nan,0x10,\"a,b\",99999999999999999999,true,,\"42\"\r\n"
-     "inf,1e3,\"say \"\"hi\"\"\",-7,false,,\"\"\n"
-     "\"multi\nline\",1e,01,1.5e-3,TRUE,,\"x\"\n")
+# A committed fixture, byte for byte: it mixes LF and CRLF line ends and has a line break
+# inside a quoted field, which file(WRITE) can't reproduce on Windows.
+execute_process(COMMAND "${CMAKE_COMMAND}" -E copy "${F}/people.csv" "${W}/people.csv")
 check("CSV in" 0 COMMAND "${CONVERT}" people.csv people.btoon)
 check("CSV decode" 0 COMMAND "${BTOON}" decode people.btoon people.json --compact)
 expect_text("CSV reading follows RFC 4180" "${W}/people.json"
