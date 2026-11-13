@@ -180,8 +180,12 @@ TEST_F(ValidatorTest, TypeValidation) {
     Timestamp valid_ts{1234567890};
     EXPECT_TRUE(TypeValidator::validateTimestamp(valid_ts));
     
-    Timestamp invalid_ts{-1};  // Before Unix epoch
-    EXPECT_FALSE(TypeValidator::validateTimestamp(invalid_ts));
+    // docs/SPEC.md §5.1: any int64 seconds is valid, including before 1970 and after 2100.
+    EXPECT_TRUE(TypeValidator::validateTimestamp(Timestamp{-1}));
+    EXPECT_TRUE(TypeValidator::validateTimestamp(Timestamp{4102444801}));
+    EXPECT_FALSE(TypeValidator::validateTimestamp(Timestamp{0, 1000000000}));
+    EXPECT_FALSE(TypeValidator::validateTimestamp(Timestamp{0, 0, 1081}));
+    EXPECT_TRUE(TypeValidator::validateTimestamp(Timestamp{0, 999999999, -1080}));
     
     // Extension validation
     Extension valid_ext{1, {0x01, 0x02}};
@@ -280,4 +284,50 @@ TEST_F(ValidatorTest, DuplicateMapKeys) {
     Validator validator(opts);
     auto result = validator.validate(std::span<const uint8_t>(valid_map));
     EXPECT_TRUE(result.valid);
+}
+
+// Review 2026-11-13: the byte path ignored the options and couldn't validate signed or
+// pre-1970 documents.
+TEST(ValidatorFixes, ByteInputHonorsTheOptions) {
+    const std::string key(32, 'k');
+    EncodeOptions signed_opts;
+    signed_opts.hmac_key = key;
+    const auto signed_doc = encode(Map{{"a", Int(1)}}, signed_opts);
+
+    EXPECT_FALSE(Validator().validate(signed_doc).valid);  // no key: authentication_failed
+
+    ValidationOptions with_key;
+    with_key.hmac_key = key;
+    EXPECT_TRUE(Validator(with_key).validate(signed_doc).valid);
+    EXPECT_FALSE(Validator(with_key).sanitize(signed_doc).empty());
+
+    ValidationOptions wrong_key;
+    wrong_key.hmac_key = std::string(32, 'x');
+    EXPECT_FALSE(Validator(wrong_key).validate(signed_doc).valid);
+
+    ValidationOptions empty_key;
+    empty_key.hmac_key = std::string();
+    EXPECT_FALSE(Validator(empty_key).validate(signed_doc).valid);  // an empty key is an error
+    EXPECT_FALSE(Validator(empty_key).validate(encode(Int(1))).valid);
+
+    // max_depth reaches the decoder: 200 nested arrays pass only when allowed.
+    std::vector<uint8_t> deep(200, 0x91);
+    deep.push_back(0xc0);
+    EXPECT_FALSE(Validator().validate(deep).valid);
+    ValidationOptions deep_ok;
+    deep_ok.max_depth = 300;
+    EXPECT_TRUE(Validator(deep_ok).validate(deep).valid);
+
+    // max_total_size bounds decompression too.
+    EncodeOptions zip;
+    zip.compress = true;
+    const auto compressed = encode(String(std::string(100000, 'a')), zip);
+    ValidationOptions small;
+    small.max_total_size = 50000;
+    EXPECT_TRUE(Validator().validate(compressed).valid);
+    EXPECT_FALSE(Validator(small).validate(compressed).valid);
+
+    // Pre-1970 and post-2100 timestamps are valid documents.
+    EXPECT_TRUE(Validator().validate(encode(Timestamp{-86400})).valid);
+    EXPECT_TRUE(Validator().validate(encode(Timestamp{4200000000LL, 5})).valid);
 }

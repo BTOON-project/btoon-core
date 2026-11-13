@@ -1,0 +1,5 @@
+name,code,note,count,flag,empty,quoted
+Nan,0x10,"a,b",99999999999999999999,true,,"42"
+inf,1e3,"say ""hi""",-7,false,,""
+"multi
+line",1e,01,1.5e-3,TRUE,,"x"

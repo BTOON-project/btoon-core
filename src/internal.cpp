@@ -180,5 +180,34 @@ bool tabular_layout(const Array& rows, std::vector<const std::string*>* keys) {
     return true;
 }
 
+size_t value_footprint(const Value& value) noexcept {
+    size_t total = sizeof(Value);
+    auto add = [&total](size_t n) { total = n > SIZE_MAX - total ? SIZE_MAX : total + n; };
+    std::visit(
+        [&](const auto& x) {
+            using T = std::decay_t<decltype(x)>;
+            if constexpr (std::is_same_v<T, String> || std::is_same_v<T, Binary>) {
+                add(x.size());
+            } else if constexpr (std::is_same_v<T, Array>) {
+                for (const auto& e : x) add(value_footprint(e));
+            } else if constexpr (std::is_same_v<T, Map>) {
+                for (const auto& [k, e] : x) {
+                    add(sizeof(std::string) + k.size());
+                    add(value_footprint(e));
+                }
+            } else if constexpr (std::is_same_v<T, Extension>) {
+                add(x.data.size());
+            } else if constexpr (std::is_same_v<T, BigInt>) {
+                add(x.bytes.size());
+            } else if constexpr (std::is_same_v<T, VectorFloat>) {
+                add(x.data.size() * sizeof(float));
+            } else if constexpr (std::is_same_v<T, VectorDouble>) {
+                add(x.data.size() * sizeof(double));
+            }
+        },
+        value);
+    return total;
+}
+
 } // namespace detail
 } // namespace btoon

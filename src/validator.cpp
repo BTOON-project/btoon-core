@@ -155,11 +155,10 @@ bool TypeValidator::validateFloat(double value, bool allowNaN, bool allowInf) {
 }
 
 bool TypeValidator::validateTimestamp(const Timestamp& ts) {
-    // Check reasonable timestamp bounds (1970-2100)
-    const int64_t MIN_TIMESTAMP = 0;
-    const int64_t MAX_TIMESTAMP = 4102444800;  // Jan 1, 2100
-    
-    return ts.seconds >= MIN_TIMESTAMP && ts.seconds <= MAX_TIMESTAMP;
+    // docs/SPEC.md §5.1: seconds may be any int64, so dates before 1970 or after 2100 are
+    // valid. Only the nanoseconds and the offset have limits.
+    if (ts.nanoseconds >= 1000000000u) return false;
+    return !ts.has_timezone || (ts.timezone_offset >= -1080 && ts.timezone_offset <= 1080);
 }
 
 bool TypeValidator::validateExtension(const Extension& ext) {
@@ -303,6 +302,20 @@ public:
     ValidationOptions options;
     
     explicit ValidatorImpl(const ValidationOptions& opts) : options(opts) {}
+
+    // The decoder settings for encoded input. Returns an error message if the options
+    // can't be used (an empty key).
+    std::optional<std::string> decodeOptions(DecodeOptions& out) const {
+        out.strict = true;
+        out.auto_decompress = true;
+        out.max_depth = options.max_depth;
+        out.max_decompressed_size = std::min(options.max_total_size, kDefaultMaxDecompressedSize);
+        if (options.hmac_key) {
+            if (options.hmac_key->empty()) return std::string("Invalid options: hmac_key is empty");
+            out.hmac_key = *options.hmac_key;
+        }
+        return std::nullopt;
+    }
     
     ValidationResult validateData(std::span<const uint8_t> data) const {
         ValidationResult result;
@@ -359,10 +372,14 @@ public:
             }
         }
         
-        // Try to decode and validate structure
+        // Decode with the caller's limits and key (see ValidationOptions).
+        DecodeOptions decode_options;
+        if (auto error = decodeOptions(decode_options)) {
+            result.addError(*error);
+            return result;
+        }
         try {
-            Decoder decoder;
-            Value value = decoder.decode(data);
+            Value value = decode(data, decode_options);
             
             // Validate the decoded value
             ValidationResult valueResult = validateValue(value, 0);
@@ -554,10 +571,11 @@ bool Validator::quickCheck(std::span<const uint8_t> data) const {
 }
 
 std::vector<uint8_t> Validator::sanitize(std::span<const uint8_t> data) const {
-    // Try to decode and re-encode with validation
+    // Decode with the same settings as validate(), then re-encode canonically.
+    DecodeOptions decode_options;
+    if (pimpl_->decodeOptions(decode_options)) return {};
     try {
-        Decoder decoder;
-        Value value = decoder.decode(data);
+        Value value = decode(data, decode_options);
         
         // Validate
         auto result = validate(value);

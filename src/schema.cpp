@@ -1,7 +1,9 @@
 #include "btoon/schema.h"
+#include "internal.h"
+#include "pattern.h"
 #include <sstream>
 #include <algorithm>
-#include <regex>
+#include <cmath>
 #include <fstream>
 #include <set>
 #include <limits>
@@ -15,19 +17,190 @@ std::string SchemaVersion::toString() const {
 }
 
 SchemaVersion SchemaVersion::fromString(const std::string& str) {
-    std::regex version_regex(R"((\d+)\.(\d+)\.(\d+))");
-    std::smatch match;
-    
-    if (std::regex_match(str, match, version_regex)) {
-        return SchemaVersion(
-            static_cast<uint32_t>(std::stoul(match[1].str())),
-            static_cast<uint32_t>(std::stoul(match[2].str())),
-            static_cast<uint32_t>(std::stoul(match[3].str()))
-        );
+    // "MAJOR.MINOR.PATCH", each part a decimal uint32. Parsed by hand: std::regex recursed
+    // once per character and overflowed the stack on long strings.
+    auto invalid = [&]() -> SchemaVersion {
+        std::string shown = str.size() > 40 ? str.substr(0, 40) + "..." : str;
+        throw BtoonException(ErrorCode::invalid_argument, "Invalid version string: " + shown);
+    };
+    uint32_t parts[3] = {0, 0, 0};
+    size_t i = 0;
+    for (int k = 0; k < 3; ++k) {
+        if (k > 0) {
+            if (i >= str.size() || str[i] != '.') return invalid();
+            ++i;
+        }
+        const size_t start = i;
+        uint64_t v = 0;
+        while (i < str.size() && str[i] >= '0' && str[i] <= '9') {
+            v = v * 10 + static_cast<uint64_t>(str[i] - '0');
+            if (v > std::numeric_limits<uint32_t>::max()) return invalid();
+            ++i;
+        }
+        if (i == start) return invalid();
+        parts[k] = static_cast<uint32_t>(v);
     }
-    
-    throw BtoonException("Invalid version string: " + str);
+    if (i != str.size()) return invalid();
+    return SchemaVersion(parts[0], parts[1], parts[2]);
 }
+
+namespace {
+
+// --- exact numeric comparison for min/max -------------------------------------------
+
+// A number as the sign and magnitude of its floor, plus whether it has a fractional
+// part. Two of these compare exactly as long as at most one came from a double; two
+// doubles are compared directly.
+struct ExactNumber {
+    bool neg = false;
+    std::vector<uint8_t> mag;  // big-endian, no leading zero bytes; empty means 0
+    bool frac = false;
+    int inf = 0;  // +1 or -1 for an infinity
+};
+
+std::vector<uint8_t> u64_bytes(uint64_t v) {
+    std::vector<uint8_t> out;
+    while (v != 0) {
+        out.insert(out.begin(), static_cast<uint8_t>(v & 0xff));
+        v >>= 8;
+    }
+    return out;
+}
+
+void shift_left(std::vector<uint8_t>& mag, int bits) {
+    const int bit_shift = bits % 8;
+    if (bit_shift != 0) {
+        uint8_t carry = 0;
+        for (size_t i = mag.size(); i-- > 0;) {
+            const unsigned wide = (static_cast<unsigned>(mag[i]) << bit_shift) | carry;
+            mag[i] = static_cast<uint8_t>(wide & 0xff);
+            carry = static_cast<uint8_t>(wide >> 8);
+        }
+        if (carry != 0) mag.insert(mag.begin(), carry);
+    }
+    mag.insert(mag.end(), static_cast<size_t>(bits / 8), 0);
+}
+
+bool is_number(const Value& v) {
+    return std::holds_alternative<Int>(v) || std::holds_alternative<Uint>(v) ||
+           std::holds_alternative<Float>(v) || std::holds_alternative<BigInt>(v);
+}
+
+std::optional<ExactNumber> exact_number(const Value& v) {
+    ExactNumber n;
+    if (const Int* i = std::get_if<Int>(&v)) {
+        n.neg = *i < 0;
+        n.mag = u64_bytes(n.neg ? 0 - static_cast<uint64_t>(*i) : static_cast<uint64_t>(*i));
+        return n;
+    }
+    if (const Uint* u = std::get_if<Uint>(&v)) {
+        n.mag = u64_bytes(*u);
+        return n;
+    }
+    if (const BigInt* b = std::get_if<BigInt>(&v)) {
+        std::vector<uint8_t> bytes = b->bytes;  // two's complement, big-endian
+        if (bytes.empty()) return n;
+        n.neg = (bytes[0] & 0x80) != 0;
+        if (n.neg) {  // magnitude = -value
+            for (auto& x : bytes) x = static_cast<uint8_t>(~x);
+            for (size_t i = bytes.size(); i-- > 0;) {
+                if (++bytes[i] != 0) break;
+            }
+        }
+        size_t z = 0;
+        while (z < bytes.size() && bytes[z] == 0) ++z;
+        n.mag.assign(bytes.begin() + static_cast<std::ptrdiff_t>(z), bytes.end());
+        if (n.mag.empty()) n.neg = false;
+        return n;
+    }
+    if (const Float* f = std::get_if<Float>(&v)) {
+        const double d = *f;
+        if (std::isnan(d)) return std::nullopt;
+        if (std::isinf(d)) {
+            n.inf = d > 0 ? 1 : -1;
+            return n;
+        }
+        const double fl = std::floor(d);
+        n.frac = d > fl;
+        n.neg = fl < 0;
+        const double m = std::fabs(fl);
+        if (m == 0) return n;
+        int e = 0;
+        const double fr = std::frexp(m, &e);  // m = fr * 2^e, fr in [0.5, 1)
+        const auto mant = static_cast<uint64_t>(std::ldexp(fr, 53));
+        const int shift = e - 53;
+        if (shift <= 0) {
+            n.mag = u64_bytes(mant >> -shift);  // exact: m is an integer
+        } else {
+            n.mag = u64_bytes(mant);
+            shift_left(n.mag, shift);
+        }
+        return n;
+    }
+    return std::nullopt;
+}
+
+// Compares two numbers exactly across Int, Uint, Float and BigInt: -1, 0 or 1.
+// Returns nullopt if either isn't a number or is NaN.
+std::optional<int> compare_numbers(const Value& a, const Value& b) {
+    const Float* fa = std::get_if<Float>(&a);
+    const Float* fb = std::get_if<Float>(&b);
+    if (fa && fb) {
+        if (std::isnan(*fa) || std::isnan(*fb)) return std::nullopt;
+        return *fa < *fb ? -1 : (*fa > *fb ? 1 : 0);
+    }
+    auto x = exact_number(a);
+    auto y = exact_number(b);
+    if (!x || !y) return std::nullopt;
+    if (x->inf != y->inf) return x->inf < y->inf ? -1 : 1;
+    int c = 0;
+    if (x->neg != y->neg) {
+        c = x->neg ? -1 : 1;
+    } else {
+        if (x->mag.size() != y->mag.size()) {
+            c = x->mag.size() < y->mag.size() ? -1 : 1;
+        } else {
+            for (size_t i = 0; i < x->mag.size() && c == 0; ++i) {
+                if (x->mag[i] != y->mag[i]) c = x->mag[i] < y->mag[i] ? -1 : 1;
+            }
+        }
+        if (x->neg) c = -c;
+    }
+    if (c != 0) return c;
+    if (x->frac != y->frac) return x->frac ? 1 : -1;
+    return 0;
+}
+
+// Rejects constraints that can't be evaluated, so a broken schema fails when it is
+// built, not on every validate().
+void check_constraints(const SchemaField& field) {
+    if (!field.constraints) return;
+    const Map* m = std::get_if<Map>(&*field.constraints);
+    if (!m) return;
+    auto bad = [&](const std::string& why) {
+        throw BtoonException(ErrorCode::invalid_argument, "Field '" + field.name + "': " + why);
+    };
+    for (const char* bound : {"min", "max"}) {
+        auto it = m->find(bound);
+        if (it == m->end()) continue;
+        const Float* f = std::get_if<Float>(&it->second);
+        if (!is_number(it->second) || (f && std::isnan(*f))) {
+            bad(std::string("constraint '") + bound + "' must be a number");
+        }
+    }
+    auto p = m->find("pattern");
+    if (p != m->end()) {
+        const String* s = std::get_if<String>(&p->second);
+        if (!s) bad("constraint 'pattern' must be a string");
+        try {
+            detail::Pattern compiled(*s);
+        } catch (const BtoonException& e) {
+            bad(e.what());
+        }
+    }
+}
+
+}  // namespace
 
 // ===== SchemaImpl Implementation =====
 
@@ -42,7 +215,9 @@ public:
     SchemaImpl(const std::string& name, const SchemaVersion& version, 
                const std::vector<SchemaField>& fields)
         : name_(name), version_(version), fields_(fields),
-          evolution_strategy_(EvolutionStrategy::BACKWARD_COMPATIBLE) {}
+          evolution_strategy_(EvolutionStrategy::BACKWARD_COMPATIBLE) {
+        for (const auto& field : fields_) check_constraints(field);
+    }
 
     // Validation
     bool validate(const Value& value) const {
@@ -59,26 +234,23 @@ public:
             return errors;
         }
         
-        // Check required fields
+        // Required fields must be present. Every present field, required or optional,
+        // must have the right type and meet its constraints.
         for (const auto& field : fields_) {
-            if (field.required) {
-                auto it = value_map->find(field.name);
-                if (it == value_map->end()) {
-                    errors.push_back("Missing required field: " + field.name);
-                    continue;
-                }
-                
-                // Type validation
-                if (!validateType(it->second, field.type)) {
-                    errors.push_back("Invalid type for field '" + field.name + 
-                                    "': expected " + field.type);
-                }
-                
-                // Constraint validation
-                if (field.constraints.has_value()) {
-                    if (!validateConstraints(it->second, field.constraints.value())) {
-                        errors.push_back("Constraint violation for field: " + field.name);
-                    }
+            auto it = value_map->find(field.name);
+            if (it == value_map->end()) {
+                if (field.required) errors.push_back("Missing required field: " + field.name);
+                continue;
+            }
+
+            if (!validateType(it->second, field.type)) {
+                errors.push_back("Invalid type for field '" + field.name +
+                                "': expected " + field.type);
+            }
+
+            if (field.constraints.has_value()) {
+                if (!validateConstraints(it->second, field.constraints.value())) {
+                    errors.push_back("Constraint violation for field: " + field.name);
                 }
             }
         }
@@ -109,6 +281,7 @@ public:
     
     // Field management
     void addField(const SchemaField& field) {
+        check_constraints(field);
         fields_.push_back(field);
     }
     
@@ -316,7 +489,8 @@ public:
                         if (field_map->count("constraints")) {
                             field.constraints = field_map->at("constraints");
                         }
-                        
+
+                        check_constraints(field);
                         fields_.push_back(field);
                     }
                 }
@@ -467,50 +641,29 @@ private:
             return true;  // No constraints
         }
         
-        // Check min/max for numeric types
-        if (constraint_map->count("min")) {
-            if (const Int* int_val = std::get_if<Int>(&value)) {
-                const Int* min_val = std::get_if<Int>(&constraint_map->at("min"));
-                if (min_val && *int_val < *min_val) {
-                    return false;
-                }
-            }
-            if (const Float* float_val = std::get_if<Float>(&value)) {
-                const Float* min_val = std::get_if<Float>(&constraint_map->at("min"));
-                if (min_val && *float_val < *min_val) {
-                    return false;
-                }
+        // min and max apply to numbers, compared exactly across Int, Uint, Float and
+        // BigInt. NaN never satisfies a bound.
+        if (is_number(value)) {
+            for (const char* bound : {"min", "max"}) {
+                auto it = constraint_map->find(bound);
+                if (it == constraint_map->end()) continue;
+                const auto c = compare_numbers(value, it->second);
+                if (!c) return false;
+                if (bound[1] == 'i' ? *c < 0 : *c > 0) return false;
             }
         }
-        
-        if (constraint_map->count("max")) {
-            if (const Int* int_val = std::get_if<Int>(&value)) {
-                const Int* max_val = std::get_if<Int>(&constraint_map->at("max"));
-                if (max_val && *int_val > *max_val) {
-                    return false;
-                }
-            }
-            if (const Float* float_val = std::get_if<Float>(&value)) {
-                const Float* max_val = std::get_if<Float>(&constraint_map->at("max"));
-                if (max_val && *float_val > *max_val) {
-                    return false;
-                }
-            }
-        }
-        
-        // Check pattern for strings
-        if (constraint_map->count("pattern")) {
+
+        // pattern applies to strings. detail::Pattern matches in linear time without
+        // recursing on the string; std::regex overflowed the stack on long ones.
+        auto pattern_it = constraint_map->find("pattern");
+        if (pattern_it != constraint_map->end()) {
             if (const String* str_val = std::get_if<String>(&value)) {
-                const String* pattern = std::get_if<String>(&constraint_map->at("pattern"));
-                if (pattern) {
-                    std::regex re(*pattern);
-                    if (!std::regex_match(*str_val, re)) {
-                        return false;
-                    }
+                if (const String* pattern = std::get_if<String>(&pattern_it->second)) {
+                    if (!detail::Pattern(*pattern).full_match(*str_val)) return false;
                 }
             }
         }
-        
+
         // Check enum values
         if (constraint_map->count("enum")) {
             const Array* enum_values = std::get_if<Array>(&constraint_map->at("enum"));
@@ -1028,33 +1181,20 @@ public:
             // TODO: Infer patterns if options.infer_patterns is true
             
         } else if (type == "int" || type == "uint" || type == "number") {
-            double min_val = std::numeric_limits<double>::max();
-            double max_val = std::numeric_limits<double>::lowest();
-            
+            // The bounds are the extreme values themselves, compared exactly. Going through
+            // double lost precision near 2^63 and 2^64, and casting back overflowed (UB), so
+            // an inferred schema could reject its own input.
+            std::optional<Value> min_val;
+            std::optional<Value> max_val;
             for (const auto& v : values) {
-                double val = 0;
-                if (auto* i = std::get_if<Int>(&v)) {
-                    val = static_cast<double>(*i);
-                } else if (auto* u = std::get_if<Uint>(&v)) {
-                    val = static_cast<double>(*u);
-                } else if (auto* f = std::get_if<Float>(&v)) {
-                    val = *f;
-                }
-                min_val = std::min(min_val, val);
-                max_val = std::max(max_val, val);
+                if (!is_number(v)) continue;
+                if (const Float* f = std::get_if<Float>(&v); f && std::isnan(*f)) continue;
+                if (!min_val || compare_numbers(v, *min_val).value_or(0) < 0) min_val = v;
+                if (!max_val || compare_numbers(v, *max_val).value_or(0) > 0) max_val = v;
             }
-            
-            if (min_val != std::numeric_limits<double>::max()) {
-                if (type == "int") {
-                    constraints["min"] = static_cast<Int>(min_val);
-                    constraints["max"] = static_cast<Int>(max_val);
-                } else if (type == "uint") {
-                    constraints["min"] = static_cast<Uint>(min_val);
-                    constraints["max"] = static_cast<Uint>(max_val);
-                } else {
-                    constraints["min"] = static_cast<Float>(min_val);
-                    constraints["max"] = static_cast<Float>(max_val);
-                }
+            if (min_val) {
+                constraints["min"] = *min_val;
+                constraints["max"] = *max_val;
             }
         } else if (type == "array") {
             size_t min_items = std::numeric_limits<size_t>::max();

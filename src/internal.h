@@ -43,6 +43,11 @@ inline constexpr uint32_t kNanosPerSecond = 1000000000u;
 
 [[noreturn]] BTOON_NOINLINE void fail(ErrorCode code, const std::string& message);
 
+// An estimate of the memory a decoded value occupies: one Value per node plus the bytes
+// of strings, binaries, map keys, extension payloads, bigints and vectors. It saturates
+// at SIZE_MAX. Used to bound codecs that copy one decoded value many times.
+size_t value_footprint(const Value& value) noexcept;
+
 /// Removes a compression envelope (docs/SPEC.md §6) from `bytes`, decompressing into
 /// `storage`, or returns `bytes` unchanged if it isn't one. Implemented in btoon.cpp.
 std::span<const uint8_t> open_compression_envelope(std::span<const uint8_t> bytes, const DecodeOptions& options,

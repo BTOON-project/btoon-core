@@ -13,18 +13,15 @@
 
 #include "btoon/btoon.h"
 #include "json_mapping.h"
+#include "tool_io.h"
 #include "btoon/schema.h"
-#include "btoon/encoder.h"
-#include "btoon/decoder.h"
 #include <iostream>
-#include <fstream>
 #include <sstream>
 #include <filesystem>
-#include <nlohmann/json.hpp>
 #include <cstring>
 
 namespace fs = std::filesystem;
-using json = nlohmann::json;
+using btoon::tools::json;
 using namespace btoon;
 
 // Forward declarations
@@ -41,46 +38,57 @@ int cmd_doc(int argc, char* argv[]);
 std::vector<uint8_t> read_file(const std::string& path);
 void write_file(const std::string& path, const std::vector<uint8_t>& data);
 void write_file(const std::string& path, const std::string& content);
+Value load_json_file(const std::string& path);
 Value load_data_file(const std::string& path);
 Schema load_schema_file(const std::string& path);
 std::string value_to_json_string(const Value& v, bool pretty = true);
-Value json_to_value(const json& j);
 
 int main(int argc, char* argv[]) {
+    btoon::tools::use_binary_stdio();
     if (argc < 2) {
         print_usage(argv[0]);
         return 1;
     }
     
     std::string command = argv[1];
+    int rc = 0;
     
     try {
         if (command == "validate") {
-            return cmd_validate(argc - 1, argv + 1);
+            rc = cmd_validate(argc - 1, argv + 1);
         } else if (command == "compile") {
-            return cmd_compile(argc - 1, argv + 1);
+            rc = cmd_compile(argc - 1, argv + 1);
         } else if (command == "generate" || command == "gen") {
-            return cmd_generate(argc - 1, argv + 1);
+            rc = cmd_generate(argc - 1, argv + 1);
         } else if (command == "infer") {
-            return cmd_infer(argc - 1, argv + 1);
+            rc = cmd_infer(argc - 1, argv + 1);
         } else if (command == "migrate") {
-            return cmd_migrate(argc - 1, argv + 1);
+            rc = cmd_migrate(argc - 1, argv + 1);
         } else if (command == "diff") {
-            return cmd_diff(argc - 1, argv + 1);
+            rc = cmd_diff(argc - 1, argv + 1);
         } else if (command == "doc") {
-            return cmd_doc(argc - 1, argv + 1);
+            rc = cmd_doc(argc - 1, argv + 1);
         } else if (command == "--help" || command == "-h") {
             print_usage(argv[0]);
-            return 0;
         } else {
             std::cerr << "Unknown command: " << command << std::endl;
             print_usage(argv[0]);
-            return 1;
+            rc = 1;
         }
+    } catch (const BtoonException& e) {
+        std::cerr << "Error: " << e.code_name() << ": " << e.what() << std::endl;
+        return 1;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
         return 1;
     }
+    // Results go to stdout unless -o is given; a failed write (full disk, closed
+    // stdout) must not look like success.
+    if (!btoon::tools::flush_stdout()) {
+        std::cerr << "Error: writing to standard output failed" << std::endl;
+        return 1;
+    }
+    return rc;
 }
 
 void print_usage(const std::string& program_name) {
@@ -807,126 +815,40 @@ int cmd_doc(int argc, char* argv[]) {
 
 // Utility function implementations
 std::vector<uint8_t> read_file(const std::string& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("Cannot open file: " + path);
-    }
-    
-    file.seekg(0, std::ios::end);
-    size_t size = static_cast<size_t>(file.tellg());
-    file.seekg(0, std::ios::beg);
-    
-    std::vector<uint8_t> buffer(size);
-    file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(size));
-    
-    return buffer;
+    const std::string bytes = btoon::tools::read_file(path);  // also works for pipes
+    return {bytes.begin(), bytes.end()};
 }
 
 void write_file(const std::string& path, const std::vector<uint8_t>& data) {
-    std::ofstream file(path, std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("Cannot create file: " + path);
-    }
-    
-    file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    btoon::tools::write_file(path, std::string_view(reinterpret_cast<const char*>(data.data()), data.size()));
 }
 
 void write_file(const std::string& path, const std::string& content) {
-    std::ofstream file(path);
-    if (!file) {
-        throw std::runtime_error("Cannot create file: " + path);
-    }
-    
-    file << content;
+    btoon::tools::write_file(path, content);  // throws if the write fails
+}
+
+// JSON goes through the shared lossless mapping (tools/json_mapping.h): the parser
+// is depth-limited, and uint64, bigint, timestamps etc. keep their values.
+Value load_json_file(const std::string& path) {
+    return btoon::tools::from_json(btoon::tools::parse_json(btoon::tools::read_file(path)));
 }
 
 Value load_data_file(const std::string& path) {
-    std::string extension = fs::path(path).extension().string();
-    
-    if (extension == ".json") {
-        std::ifstream file(path);
-        if (!file) {
-            throw std::runtime_error("Cannot open file: " + path);
-        }
-        
-        json j;
-        file >> j;
-        return json_to_value(j);
-    } else {
-        // Assume BTOON binary format
-        auto buffer = read_file(path);
-        return decode(buffer);
-    }
+    if (fs::path(path).extension().string() == ".json") return load_json_file(path);
+    // Otherwise assume BTOON.
+    return decode(read_file(path));
 }
 
 Schema load_schema_file(const std::string& path) {
-    std::string extension = fs::path(path).extension().string();
-    
-    if (extension == ".json") {
-        std::ifstream file(path);
-        if (!file) {
-            throw std::runtime_error("Cannot open file: " + path);
-        }
-        
-        json j;
-        file >> j;
-        Value schema_value = json_to_value(j);
-        return Schema::fromValue(schema_value);
-    } else if (extension == ".bsch") {
+    if (fs::path(path).extension().string() == ".bsch") {
         // Binary compiled schema
-        auto buffer = read_file(path);
-        Value schema_value = decode(buffer);
-        return Schema::fromValue(schema_value);
-    } else {
-        // Try to parse as JSON
-        std::ifstream file(path);
-        if (!file) {
-            throw std::runtime_error("Cannot open file: " + path);
-        }
-        
-        json j;
-        file >> j;
-        Value schema_value = json_to_value(j);
-        return Schema::fromValue(schema_value);
+        return Schema::fromValue(decode(read_file(path)));
     }
+    // JSON (whatever the extension)
+    return Schema::fromValue(load_json_file(path));
 }
 
 std::string value_to_json_string(const Value& v, bool pretty) {
     auto j = btoon::tools::to_json(v);  // recursive, lossless (tools/json_mapping.h)
     return pretty ? j.dump(2) : j.dump();
-}
-
-Value json_to_value(const json& j) {
-    if (j.is_null()) {
-        return Nil{};
-    } else if (j.is_boolean()) {
-        return Bool(j.get<bool>());
-    } else if (j.is_number_integer()) {
-        if (j.get<int64_t>() < 0) {
-            return Int(j.get<int64_t>());
-        } else {
-            return Uint(j.get<uint64_t>());
-        }
-    } else if (j.is_number_float()) {
-        return Float(j.get<double>());
-    } else if (j.is_string()) {
-        return String(j.get<std::string>());
-    } else if (j.is_binary()) {
-        auto bin = j.get_binary();
-        return Binary(bin.begin(), bin.end());
-    } else if (j.is_array()) {
-        Array arr;
-        for (const auto& item : j) {
-            arr.push_back(json_to_value(item));
-        }
-        return arr;
-    } else if (j.is_object()) {
-        Map m;
-        for (auto it = j.begin(); it != j.end(); ++it) {
-            m[it.key()] = json_to_value(it.value());
-        }
-        return m;
-    }
-    
-    return Nil{};
 }

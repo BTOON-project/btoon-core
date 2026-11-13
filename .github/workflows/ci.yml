@@ -97,6 +97,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3
       - run: uv run --with msgpack --with zstandard --with lz4 --with brotli python tests/vectors/generate.py --check
+      - name: CLI test fixtures are current
+        run: uv run --with msgpack python tests/tools/make_fixtures.py --check
 
   fuzz:
     name: libFuzzer (2 minutes)

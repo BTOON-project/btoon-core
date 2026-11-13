@@ -1,0 +1,8 @@
+# Test fixtures, the CLI test script and the vectors are compared byte for byte, so check
+# them out exactly as committed on every platform. Windows runners default to
+# core.autocrlf=true.
+tests/tools/* text eol=lf
+tests/tools/*.btoon binary
+# This CSV mixes LF and CRLF on purpose (RFC 4180 accepts both): never convert it.
+tests/tools/people.csv -text
+tests/vectors/*.json text eol=lf

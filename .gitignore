@@ -17,6 +17,7 @@ DartConfiguration.tcl
 *.cmake
 !CMakeLists.txt
 !cmake/*.cmake
+!tests/tools/*.cmake
 
 # Compiled binaries and libraries
 *.a
