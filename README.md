@@ -164,7 +164,7 @@ experimental/    design sketches that aren't built or installed
 
 ## Status
 
-Version **0.1.3** implements spec **0.1**. The format may still change before 1.0. When it
+Version **0.1.4** implements spec **0.1**. The format may still change before 1.0. When it
 does, the spec, the vectors and every library change together. Changes are tracked in
 [docs/CHANGELOG.md](docs/CHANGELOG.md).
 

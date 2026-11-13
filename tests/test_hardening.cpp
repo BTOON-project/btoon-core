@@ -9,10 +9,14 @@
 #include <limits>
 #include <random>
 
+#include <sstream>
+
 #include "btoon/btoon.h"
 #include "btoon/decoder.h"
 #include "btoon/encoder.h"
 #include "btoon/security.h"
+#include "btoon/stream_decoder.h"
+#include "btoon/stream_encoder.h"
 
 using namespace btoon;
 
@@ -236,6 +240,142 @@ TEST(Hardening, TypeRestrictions) {
     EXPECT_NO_THROW(restricted.decode(ok));
     auto bad = encode(Value(Array{String("x")}));
     EXPECT_THROW(restricted.decode(bad), BtoonException);
+}
+
+// The Decoder class must enforce DecodeOptions::hmac_key as decode() does.
+// Before 0.1.4 it ignored the key and returned forged, unsigned input.
+TEST(Hardening, DecoderClassVerifiesHmacKeyFromOptions) {
+    const std::string key(32, 'k');
+    DecodeOptions with_key;
+    with_key.hmac_key = key;
+    const Decoder dec(with_key);
+    auto forged = encode(Value(String("forged")));
+    auto expect_code = [](auto&& f, ErrorCode want) {
+        try {
+            f();
+            ADD_FAILURE() << "accepted";
+        } catch (const BtoonException& e) {
+            EXPECT_EQ(e.code(), want) << e.what();
+        }
+    };
+    expect_code([&] { dec.decode(forged); }, ErrorCode::authentication_failed);
+    expect_code([&] { dec.decode_and_get_pos(forged); }, ErrorCode::authentication_failed);
+    DecodeOptions lax = with_key;
+    lax.strict = false;
+    expect_code([&] { Decoder(lax).decode(forged); }, ErrorCode::authentication_failed);
+
+    EncodeOptions eo;
+    eo.hmac_key = key;
+    auto sealed = encode(Value(String("hello")), eo);
+    EXPECT_EQ(dec.decode(sealed), Value(String("hello")));
+    auto [v, used] = dec.decode_and_get_pos(sealed);
+    EXPECT_EQ(v, Value(String("hello")));
+    EXPECT_EQ(used, sealed.size());
+    DecodeOptions wrong;
+    wrong.hmac_key = std::string(32, 'x');
+    expect_code([&] { Decoder(wrong).decode(sealed); }, ErrorCode::authentication_failed);
+    auto tampered = sealed;
+    tampered.back() ^= 1;
+    expect_code([&] { dec.decode(tampered); }, ErrorCode::authentication_failed);
+}
+
+// Decoder::decode() opens envelopes exactly like decode(). Before 0.1.4 a
+// non-strict Decoder read "BTON..." and "BTSG..." as the integer 66.
+TEST(Hardening, DecoderClassOpensEnvelopesLikeDecode) {
+    const std::string key(32, 'k');
+    EncodeOptions zo;
+    zo.compress = true;
+    const Value text(String(std::string(300, 'a')));
+    auto compressed = encode(text, zo);
+    ASSERT_EQ(std::memcmp(compressed.data(), "BTON", 4), 0);
+    EncodeOptions so;
+    so.hmac_key = key;
+    auto sealed = encode(text, so);
+    EncodeOptions both = zo;
+    both.hmac_key = key;
+    auto sealed_compressed = encode(sample_document(), both);
+
+    for (bool strict : {true, false}) {
+        DecodeOptions o;
+        o.strict = strict;
+        EXPECT_EQ(Decoder(o).decode(compressed), text) << "strict=" << strict;
+        EXPECT_EQ(code_of(sealed, o), ErrorCode::authentication_failed);
+        try {
+            Decoder(o).decode(sealed);
+            ADD_FAILURE() << "signed input accepted without a key, strict=" << strict;
+        } catch (const BtoonException& e) {
+            EXPECT_EQ(e.code(), ErrorCode::authentication_failed);
+        }
+        o.hmac_key = key;
+        EXPECT_EQ(Decoder(o).decode(sealed_compressed), sample_document());
+        o.hmac_key.clear();
+        o.auto_decompress = false;
+        EXPECT_THROW(Decoder(o).decode(compressed), BtoonException);
+    }
+    // A Security object verifies, and the compressed payload is opened too.
+    EXPECT_EQ(Decoder(Security(key)).decode(sealed_compressed), sample_document());
+
+    // decode_and_get_pos() reads bare values: "BTON" is the integer 66 followed
+    // by more values, as in a stream of concatenated documents.
+    auto [first, used] = Decoder().decode_and_get_pos(compressed);
+    EXPECT_EQ(first, Value(Int(66)));
+    EXPECT_EQ(used, 1u);
+}
+
+// Decoder and Encoder copy the Security object. Before 0.1.4 they kept a
+// pointer to it, so a temporary dangled (stack-use-after-scope under ASan).
+TEST(Hardening, DecoderAndEncoderCopyTheSecurityObject) {
+    const std::string key = "an HMAC key that is long enough to be heap allocated";
+    EncodeOptions eo;
+    eo.hmac_key = key;
+    auto sealed = encode(Value(Int(42)), eo);
+    Decoder dec{Security{key}};
+    EXPECT_EQ(dec.decode(sealed), Value(Int(42)));
+
+    Encoder enc{Security{key}};
+    enc.encode(Value(Int(42)));
+    EXPECT_EQ(enc.release(), sealed);
+
+    Security sec(key);
+    Decoder copy(sec);
+    sec.setSecretKey("a different key");
+    EXPECT_EQ(copy.decode(sealed), Value(Int(42)));  // changes to `sec` don't reach `copy`
+}
+
+// A stream of bare documents can't carry envelopes, so the stream classes
+// reject the options instead of silently writing or accepting bare documents.
+TEST(Hardening, StreamsRejectEnvelopeOptions) {
+    std::stringstream ss;
+    EncodeOptions compress;
+    compress.compress = true;
+    EncodeOptions sign;
+    sign.hmac_key = std::string(32, 'k');
+    DecodeOptions verify;
+    verify.hmac_key = std::string(32, 'k');
+    for (const EncodeOptions& o : {compress, sign}) {
+        try {
+            StreamEncoder w(ss, o);
+            ADD_FAILURE() << "StreamEncoder accepted envelope options";
+        } catch (const BtoonException& e) {
+            EXPECT_EQ(e.code(), ErrorCode::invalid_argument);
+        }
+    }
+    try {
+        StreamDecoder r(ss, verify);
+        ADD_FAILURE() << "StreamDecoder accepted an HMAC key";
+    } catch (const BtoonException& e) {
+        EXPECT_EQ(e.code(), ErrorCode::invalid_argument);
+    }
+    // Options without envelopes still work.
+    EncodeOptions plain;
+    plain.auto_tabular = false;
+    StreamEncoder w(ss, plain);
+    w.write(Value(String("x")));
+    w.write(Value(Int(66)));
+    StreamDecoder r(ss);
+    EXPECT_EQ(r.read(), std::optional<Value>(Value(String("x"))));
+    EXPECT_EQ(r.read(), std::optional<Value>(Value(Int(66))));
+    EXPECT_EQ(r.read(), std::nullopt);
 }
 
 TEST(Hardening, IncrementalEncodingMatchesValueEncoding) {

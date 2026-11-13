@@ -12,7 +12,12 @@
 // SPDX-License-Identifier: MIT
 /**
  * @file stream_encoder.h
- * @brief Header file for the BTOON StreamEncoder class.
+ * @brief Writes values as a stream of concatenated bare BTOON documents.
+ *
+ * A stream can't carry signed or compression envelopes (see stream_decoder.h),
+ * so the constructor rejects EncodeOptions::compress and
+ * EncodeOptions::hmac_key with ErrorCode::invalid_argument rather than write
+ * unsigned, uncompressed documents.
  */
 #ifndef BTOON_STREAM_ENCODER_H
 #define BTOON_STREAM_ENCODER_H

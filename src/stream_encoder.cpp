@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
 // SPDX-License-Identifier: MIT
 //
-// Writes values as concatenated bare canonical BTOON documents. Envelope
-// options (compress, hmac_key) don't apply to streams; each value is written
-// bare so that StreamDecoder can delimit values without extra framing.
+// Writes values as concatenated bare canonical BTOON documents. Envelopes
+// (compress, hmac_key) can't be used: each value is written bare so that
+// StreamDecoder can delimit values without extra framing.
 #include "btoon/stream_encoder.h"
 #include "btoon/encoder.h"
+#include "internal.h"
 
 #include <ostream>
 
@@ -13,7 +14,11 @@ namespace btoon {
 
 class StreamEncoderImpl {
 public:
-    StreamEncoderImpl(std::ostream& stream, const EncodeOptions& options) : stream_(stream), encoder_(options) {}
+    StreamEncoderImpl(std::ostream& stream, const EncodeOptions& options) : stream_(stream), encoder_(options) {
+        if (options.compress || !options.hmac_key.empty()) {
+            detail::fail(ErrorCode::invalid_argument, "envelopes can't be used in a document stream");
+        }
+    }
 
     void write(const Value& value) {
         encoder_.clear();

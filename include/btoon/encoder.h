@@ -12,12 +12,18 @@
  * buffer. Use `encode(const Value&)` for whole values, or the primitive
  * `encode*` / `*Header` methods to emit values incrementally without building
  * a Value tree first.
+ *
+ * The Encoder writes the bare document. It does not apply
+ * EncodeOptions::compress or EncodeOptions::hmac_key: btoon::encode() does, and
+ * btoon::apply_envelopes() adds them to the Encoder's output. Only an Encoder
+ * constructed with a Security object signs its output itself.
  */
 #ifndef BTOON_ENCODER_H
 #define BTOON_ENCODER_H
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -36,6 +42,7 @@ public:
     /// The pool is no longer used; kept for source compatibility with 0.0.x.
     explicit Encoder(MemoryPool* pool);
     /// Output is wrapped in an HMAC-SHA256 signed envelope (docs/SPEC.md §8).
+    /// The Security object is copied, so it may be a temporary.
     explicit Encoder(const Security& security);
     Encoder(const Security& security, MemoryPool* pool);
     ~Encoder();
@@ -47,7 +54,7 @@ public:
 
     void setOptions(const EncodeOptions& opts) { options_ = opts; }
     const EncodeOptions& options() const noexcept { return options_; }
-    void setSecurityEnabled(bool enable) { useSecurity_ = enable && security_ != nullptr; }
+    void setSecurityEnabled(bool enable) { useSecurity_ = enable && security_.has_value(); }
 
     /// Appends the canonical encoding of `value` (recursive, depth-limited).
     void encode(const Value& value);
@@ -132,7 +139,7 @@ private:
     };
     std::vector<TabularFrame> tabular_;
 
-    const Security* security_ = nullptr;
+    std::optional<Security> security_;
     bool useSecurity_ = false;
     bool finalized_ = false;
     EncodeOptions options_;

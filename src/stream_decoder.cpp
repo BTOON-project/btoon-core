@@ -17,7 +17,11 @@ namespace btoon {
 class StreamDecoderImpl {
 public:
     StreamDecoderImpl(std::istream& stream, const DecodeOptions& options)
-        : stream_(stream), options_(options), decoder_(options) {}
+        : stream_(stream), options_(options), decoder_(options) {
+        if (!options.hmac_key.empty()) {
+            detail::fail(ErrorCode::invalid_argument, "signed envelopes can't be used in a document stream");
+        }
+    }
 
     std::optional<Value> read() {
         size_t chunk = 64 * 1024;
