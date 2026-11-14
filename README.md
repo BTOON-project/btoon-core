@@ -8,8 +8,8 @@ MessagePack before any compression.
 This repository holds the **format specification**, the **conformance test vectors**, and
 the **reference C++20 implementation** (library + `btoon` CLI).
 
-- Spec: [docs/SPEC.md](docs/SPEC.md) (version 0.1)
-- Vectors: [tests/vectors/btoon-vectors.json](tests/vectors/btoon-vectors.json) (260 cases)
+- Spec: [docs/SPEC.md](docs/SPEC.md) (version 0.3)
+- Vectors: [tests/vectors/btoon-vectors.json](tests/vectors/btoon-vectors.json) (311 cases)
 - Language libraries: [Python](https://github.com/BTOON-project/btoon-python) ·
   [Node.js](https://github.com/BTOON-project/btoon-nodejs) ·
   [JavaScript (browser)](https://github.com/BTOON-project/btoon-javascript) ·
@@ -101,10 +101,15 @@ cmake --install build               # library, headers, CMake package, btoon CLI
 | `BUILD_BENCHMARKS` | OFF | `btoon_bench` |
 | `BTOON_NATIVE_ARCH` | OFF | `-march=native`. Never for binaries you distribute. |
 
+`BUILD_SHARED_LIBS=ON` builds a shared library on Linux and macOS. On Windows the library
+is always static: its C++ API isn't exported from a DLL. CMake's default MSVC runtime
+(the DLL runtime) applies unless you set `CMAKE_MSVC_RUNTIME_LIBRARY`; the released
+Windows tools use the static runtime and need no VC++ redistributable.
+
 Use it from CMake:
 
 ```cmake
-find_package(btoon 0.1 REQUIRED)            # after install
+find_package(btoon 0.3 REQUIRED)            # after install
 target_link_libraries(app PRIVATE btoon::btoon_core)
 # or: add_subdirectory(btoon-core) — tests/tools are skipped when not top-level
 ```
@@ -156,7 +161,7 @@ with 1 on a conversion or write error and 2 on a usage error, such as an empty
 
 Also included: `btoon-convert` (BTOON, JSON, YAML, MessagePack and RFC 4180 CSV in; the
 same plus XML out; JSON uses the same mapping) and `btoon-schema` (validate, infer, diff,
-generate code).
+migrate, and generate C++, Python or TypeScript types).
 
 ## Layout
 
@@ -172,7 +177,7 @@ experimental/    design sketches that aren't built or installed
 
 ## Status
 
-Version **0.2.0** implements spec **0.2**. The format may still change before 1.0. When it
+Version **0.3.0** implements spec **0.3**. The format may still change before 1.0. When it
 does, the spec, the vectors and every library change together. Changes are tracked in
 [docs/CHANGELOG.md](docs/CHANGELOG.md).
 

@@ -1,7 +1,7 @@
 # BTOON Format Specification
 
-**Version:** 0.2 (draft)
-**Date:** 2026-11-13
+**Version:** 0.3 (draft)
+**Date:** 2026-11-14
 **Reference implementation:** [btoon-core](https://github.com/BTOON-project/btoon-core)
 **Conformance vectors:** [`tests/vectors/btoon-vectors.json`](../tests/vectors/btoon-vectors.json)
 
@@ -386,6 +386,17 @@ offset size field
   as a second zlib stream or padding, are `invalid_envelope`.
 - A zlib stream MUST NOT use a preset dictionary. The FDICT flag (bit 5 of the FLG byte)
   set is `invalid_envelope`, whatever the DICTID.
+- An LZ4 block MUST be valid under the LZ4 block format, end-of-block conditions
+  included:
+  - the last sequence holds only literals;
+  - the last 5 bytes of output are literals (all of it, when the output is shorter);
+  - the last match starts at least 12 bytes before the end of the output;
+  - no match offset is 0 or reaches back before the start of the output.
+
+  A block that breaks any of these is `invalid_envelope`. The match-length bits of the
+  final token are ignored. liblz4's decoder accepts offset 0 (writing zeros) and skips the
+  end-of-block checks on its fast path, so a decoder built on it needs its own check of
+  the block structure.
 - MUST NOT fall back to interpreting envelope bytes as a bare document.
 - SHOULD bound decoder memory for codecs with large windows: reject Zstd frames whose
   window exceeds max(8 MiB, min(`uncompressed_size`, 128 MiB)) with `invalid_envelope`.
@@ -583,10 +594,13 @@ verification off. The key is caller-supplied and SHOULD be at least 32 random by
 - An `encode_error` vector gives a `value` that encoders MUST refuse, and the error
   code.
 - **Every** implementation MUST decode every non-error vector to `value`.
-- Vectors with `"canonical": true` MUST also be re-encoded byte-for-byte from `value`. The
-  exception is a value the implementation has no native type for. JavaScript, for
-  example, can't tell the float `0.0` from the integer `0`, and it has no date type. Such
-  vectors MAY skip the re-encoding, but MUST still decode.
+- Vectors with `"canonical": true` MUST also be re-encoded byte-for-byte from `value`.
+  Every BTOON type must be writable. An implementation whose language has no native type
+  for timestamp, date or datetime MUST provide value types for them, and a decoding mode
+  that returns those types, so that all three extensions round-trip. The one exception is
+  a value the language can't represent distinctly: JavaScript, for example, can't tell
+  the float `0.0` from the integer `0`. Such vectors MAY skip the re-encoding, but MUST
+  still decode.
 - Error vectors MUST be rejected. Matching the `error` code is RECOMMENDED.
 - Vectors with `"requires": "<feature>"` (for example `"zstd"`) MAY be skipped by
   implementations without that feature.
@@ -595,7 +609,22 @@ verification off. The key is caller-supplied and SHOULD be at least 32 random by
 
 ## 11. Changes
 
-### 11.1 From 0.1 to 0.2
+### 11.1 From 0.2 to 0.3
+
+The wire format is unchanged, and so are the limits. One edge case and one conformance
+rule are new.
+
+- LZ4 blocks MUST meet the block format's end-of-block conditions, and offsets must stay
+  inside the output (§6). Decoders disagreed here: btoon-go accepted some violating
+  blocks, and liblz4 skips the end-of-block checks for longer outputs.
+- Every implementation MUST be able to write timestamp, date and datetime values, with a
+  decoding mode that preserves all three (§10). The JavaScript and Python libraries
+  gained typed date and datetime values for this.
+- New vectors: the 64-bit extremes of date and datetime, a table with date and datetime
+  columns, and LZ4 end-of-block cases.
+- §12 describes how versions relate and how to send feedback.
+
+### 11.2 From 0.1 to 0.2
 
 The wire format is unchanged: every valid 0.1 document that fits the new limits decodes
 to the same value. Decoders reject more hostile input, and encoders reject more invalid
@@ -617,7 +646,7 @@ input.
 - Vector notation: NaN payloads in float vectors, the new decoder options, and
   `encode_error` vectors (§10).
 
-### 11.2 From 0.0.x to 0.1
+### 11.3 From 0.0.x to 0.1
 
 Version 0.0.x had two contradictory spec documents, and an encoder that didn't match
 its decoder. 0.1 is the first version where the spec, the reference implementation,
@@ -633,3 +662,23 @@ and the vectors agree.
 - The compression envelope layout is unchanged. `compress=true` now defaults to zlib.
 - The signed envelope (§8) is new. The 0.0.x `[u8 len][mac]` prefix was never
   verifiable and is not supported.
+
+## 12. Versioning and feedback
+
+**Versions.** The spec is versioned 0.N, and a library's 0.N.x releases implement spec
+0.N: every BTOON library at 0.3.x implements this document. A library's patch release
+fixes bugs or adds API, but doesn't change what the library accepts or writes.
+
+**Compatibility.** The bytes of a valid canonical document haven't changed since 0.1.
+Until 1.0, a new spec version may still tighten what decoders accept, such as limits
+and malformed edge cases, or add conformance rules. §11 lists every such change.
+
+**Feedback.** The format grows from what its users need.
+- Questions, ideas and use cases go to
+  [GitHub Discussions](https://github.com/BTOON-project/btoon-core/discussions) on btoon-core.
+- Bugs go in an issue in the repository of the library concerned.
+- Spec changes start as an issue in btoon-core labelled `spec-change`. An accepted change
+  goes into the spec and the vectors first, then the reference implementation, then
+  every library.
+- Security problems are reported privately, never in a public issue. See the
+  [security policy](https://github.com/BTOON-project/.github/blob/main/SECURITY.md).

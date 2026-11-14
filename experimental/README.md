@@ -1,8 +1,9 @@
 # Experimental headers
 
-These headers were written ahead of an implementation. As of 0.1.0 they don't compile,
-or they declare functions that are never defined. They're kept here as design sketches.
-They are **not** built, installed, or covered by the stability promise of the library.
+These headers were written ahead of an implementation, or moved here because they weren't
+finished. Some don't compile, or declare functions that are never defined. They're kept
+here as design sketches. They are **not** built, installed, or covered by the stability
+promise of the library.
 
 | Header | State |
 |---|---|
@@ -12,6 +13,8 @@ They are **not** built, installed, or covered by the stability promise of the li
 | `graphql_schema.h` | GraphQL schema bridge. Doesn't compile. |
 | `json_schema.h` | JSON Schema bridge. Doesn't compile. |
 | `timeseries.h` | Time-series helpers. Mostly declarations. |
+| `zero_copy_decoder.h` | `ZeroCopyDecoder` and `ValueView`, moved out of `zero_copy.h` in 0.3.0. Decodes only part of the format and ignores its options. Implementation in `src/zero_copy_decoder.cpp`. |
+| `security_validator.h` | `SecurityValidator`, moved out of `validator.h` in 0.3.0. Byte-scanning heuristics that reported flat documents as too deep. Implementation in `src/security_validator.cpp`. |
 
 To promote one of them: implement it in `src/` and add tests to `tests/`. Then move the
 header back to `include/btoon/` and list it in `BTOON_PUBLIC_HEADERS` in `CMakeLists.txt`.

@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 
-if(POLICY CMP0091)
-    cmake_policy(SET CMP0091 NEW)  # MSVC runtime selection via CMAKE_MSVC_RUNTIME_LIBRARY
-endif()
-# Dynamic MSVC runtime (matches Node.js addons and CPython extensions).
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+# MSVC runtime: CMake's default is the DLL runtime ("MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"),
+# which matches Node.js addons and CPython extensions. Pass -DCMAKE_MSVC_RUNTIME_LIBRARY
+# (or let a parent project or the vcpkg toolchain set it) to choose another; the release
+# workflow builds the Windows tools with "MultiThreaded" so they need no VC++
+# redistributable. This file doesn't set it, so it can't override the caller's choice.
 
 # The version lives in include/btoon/btoon.h (single source of truth).
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/btoon/btoon.h" _btoon_version_lines
@@ -111,7 +111,18 @@ set(BTOON_PUBLIC_HEADERS
     include/btoon/zero_copy.h
 )
 
-add_library(btoon_core ${BTOON_SOURCES} ${BTOON_PUBLIC_HEADERS} src/internal.h src/pattern.h)
+# On Windows the library is always static: the C++ API isn't marked for DLL export, and
+# exceptions and standard-library types crossing a DLL boundary need matching runtimes.
+# (vcpkg builds it static as well.) Elsewhere BUILD_SHARED_LIBS picks the type.
+if(WIN32)
+    if(BUILD_SHARED_LIBS)
+        message(WARNING "btoon: btoon_core is a static library on Windows; BUILD_SHARED_LIBS is ignored for it")
+    endif()
+    set(_btoon_library_type STATIC)
+else()
+    set(_btoon_library_type "")
+endif()
+add_library(btoon_core ${_btoon_library_type} ${BTOON_SOURCES} ${BTOON_PUBLIC_HEADERS} src/internal.h src/pattern.h)
 add_library(btoon::btoon_core ALIAS btoon_core)
 set_target_properties(btoon_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -153,7 +164,10 @@ else()
     target_link_libraries(btoon_core PUBLIC ZLIB::ZLIB)
 endif()
 if(WIN32)
-    target_compile_definitions(btoon_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+    # For the library's own sources only: as PUBLIC definitions they leaked into every
+    # consumer and changed what <windows.h> declares there. The public headers don't
+    # depend on them (std::numeric_limits<T>::min is written as (…::min)()).
+    target_compile_definitions(btoon_core PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
 # Warnings apply to our own sources only.
@@ -266,6 +280,8 @@ if(BUILD_TESTS)
         tests/test_validator.cpp
         tests/test_codecs.cpp
         tests/test_pattern.cpp
+        tests/test_public_headers.cpp
+        tests/test_periphery.cpp
     )
     target_link_libraries(btoon_tests PRIVATE btoon_core GTest::gtest GTest::gtest_main)
     target_include_directories(btoon_tests PRIVATE include/third_party src)
@@ -274,6 +290,18 @@ if(BUILD_TESTS)
 
     include(GoogleTest)
     gtest_discover_tests(btoon_tests DISCOVERY_TIMEOUT 60)
+
+    # The C API used from C: capi.h must compile as C99, with warnings as errors.
+    enable_language(C)
+    add_executable(btoon_capi_c_test tests/test_capi_c.c)
+    target_link_libraries(btoon_capi_c_test PRIVATE btoon_core)
+    set_target_properties(btoon_capi_c_test PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    if(MSVC)
+        target_compile_options(btoon_capi_c_test PRIVATE /W4 /wd4127)
+    else()
+        target_compile_options(btoon_capi_c_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME capi_c COMMAND btoon_capi_c_test)
 
     # Mutation fuzzer that runs without libFuzzer (works on any compiler).
     add_executable(btoon_fuzz_smoke tests/fuzz_smoke.cpp)
@@ -295,6 +323,8 @@ if(BUILD_TESTS)
     # The built tools on the fixtures in tests/tools: round trips of every type, deep
     # JSON, an empty key file, failed writes. tests/tools/make_fixtures.py writes them.
     if(BUILD_TOOLS)
+        # Python, if there is one, imports the code `btoon-schema generate -l python` writes.
+        find_package(Python3 COMPONENTS Interpreter QUIET)
         add_test(NAME tools_cli
             COMMAND ${CMAKE_COMMAND}
                 -DBTOON=$<TARGET_FILE:btoon>
@@ -302,7 +332,27 @@ if(BUILD_TESTS)
                 -DSCHEMA=$<TARGET_FILE:btoon-schema>
                 -DFIXTURES=${CMAKE_CURRENT_SOURCE_DIR}/tests/tools
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/tools_cli
+                "-DPYTHON=${Python3_EXECUTABLE}"
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/run_tools_test.cmake)
+    endif()
+    if(BUILD_TOOLS AND NOT CMAKE_CROSSCOMPILING)
+        # The C++ that `btoon-schema generate -l cpp` writes must compile and read decoded
+        # data. The generator runs at build time, so this is skipped when cross-compiling.
+        set(_btoon_codegen_dir ${CMAKE_CURRENT_BINARY_DIR}/codegen)
+        add_custom_command(
+            OUTPUT ${_btoon_codegen_dir}/sensor_reading.h
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${_btoon_codegen_dir}
+            COMMAND btoon-schema generate ${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/codegen.schema.json
+                    -l cpp -n gen -o ${_btoon_codegen_dir}/sensor_reading.h
+            DEPENDS btoon-schema ${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/codegen.schema.json
+            VERBATIM)
+        add_executable(btoon_codegen_test tests/tools/codegen_test.cpp ${_btoon_codegen_dir}/sensor_reading.h)
+        target_include_directories(btoon_codegen_test PRIVATE ${_btoon_codegen_dir})
+        target_link_libraries(btoon_codegen_test PRIVATE btoon_core)
+        if(NOT MSVC)
+            target_compile_options(btoon_codegen_test PRIVATE -Wall -Wextra -Wpedantic)
+        endif()
+        add_test(NAME codegen_cpp COMMAND btoon_codegen_test)
     endif()
 
     # Vectors are generated independently by tests/vectors/generate.py (msgpack-python oracle).

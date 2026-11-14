@@ -54,6 +54,20 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config Debug --output-on-failure
 
+  i386:
+    name: linux-i386 (32-bit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # 32-bit size_t catches overflows that 64-bit builds hide (vcpkg builds x86-windows and
+      # arm-neon-android). Alpine's i386 packages run natively on an x86-64 runner.
+      - run: >
+          docker run --rm --platform linux/386 -v "$PWD:/src:ro" alpine:3.22 sh -c '
+          apk add --no-cache g++ cmake make zlib-dev lz4-dev zstd-dev brotli-dev snappy-dev gtest-dev linux-headers pkgconf python3 &&
+          cmake -S /src -B /tmp/b -DCMAKE_BUILD_TYPE=Debug -DBTOON_WITH_LZ4=ON -DBTOON_WITH_ZSTD=ON -DBTOON_WITH_BROTLI=ON -DBTOON_WITH_SNAPPY=ON &&
+          cmake --build /tmp/b --parallel 4 &&
+          ctest --test-dir /tmp/b --output-on-failure'
+
   android:
     name: android (${{ matrix.abi }})
     runs-on: ubuntu-latest

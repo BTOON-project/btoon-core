@@ -5,9 +5,183 @@ All notable changes to BTOON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-14
+
+Implements spec 0.3 (docs/SPEC.md §11.1). The wire format and the limits are unchanged.
+Spec 0.3 requires LZ4 blocks to be valid under the LZ4 block format, end-of-block
+conditions and offsets included, and requires every library to write timestamp, date and
+datetime values. The vectors grow to 311. This release also fixes the remaining findings
+of the 2026-11-13 review and trims the installed API. Entries marked **(behavior change)**
+or **(removed)** can affect existing code.
+
+### Security
+- **LZ4 blocks are checked against SPEC §6 before liblz4 decodes them.** liblz4 skips the
+  end-of-block checks, and accepts a match offset of 0, for a sequence it decodes on its
+  fast path, which it takes while at least 32 bytes of output remain. Core therefore
+  accepted blocks the spec rejects (the vectors `lz4-block/long-output-ends-with-match` and
+  `lz4-block/offset-zero`). A structural pass now parses the tokens, lengths and offsets
+  first and fails with `invalid_envelope` on:
+  - an offset of 0, or one that reaches back before the start of the output;
+  - output that isn't exactly the declared size;
+  - a block that ends with a match, or input that ends inside a sequence;
+  - in a block with a match, a final literal run shorter than 5 bytes, or a last match
+    that starts less than 12 bytes before the end.
+
+  A block without matches is one literal run, valid at any length, and the final token's
+  match-length bits are ignored. So an empty output may also be any single token 01 to
+  0f, which liblz4 rejected **(behavior change)**. This applies to
+  `decompress(CompressionAlgorithm::LZ4, …)` too.
+- **Type restrictions didn't apply to tabular rows.** A `Decoder` whose `Security`
+  disallowed maps rejected a plain array of maps but accepted the same rows in tabular
+  form. Rows now need the map type, like any other map, and fail with `invalid_argument`
+  otherwise **(behavior change)**.
+- **32-bit builds rejected valid LZ4 envelopes.** The LZ4 and Snappy plausibility bounds
+  were computed in `size_t` and wrapped on 32-bit targets: a valid 51 MB document with a
+  17 MB LZ4 payload failed with `invalid_envelope` on i386. They're computed in 64 bits
+  now, and CI runs the tests on linux-i386. (The vector tests' harness also failed there:
+  it returned floats through the x87 stack, which quiets signaling NaNs.)
+- **`MemoryMappedFile` and `SharedMemoryBuffer` were copyable.** A copy unmapped the
+  region under the original, and destroyed a segment's name twice. Both are now neither
+  copyable nor movable; keep them in the `std::unique_ptr` that `open()`/`create()` return
+  **(behavior change: copies don't compile)**.
+- **`MemoryPool::allocate(SIZE_MAX - 16)` returned memory the next allocation
+  overlapped**, because rounding the size up wrapped. Such sizes throw `std::bad_alloc`.
+  Freed chunks were also reused and split at unaligned sizes; every allocation is now
+  32-byte aligned, as documented.
+- **The C API let `std::length_error` escape into C** from `btoon_value_create_string(s,
+  SIZE_MAX)`, which terminated the process. The create functions now return `NULL` on any
+  failure.
+
+### Changed: the C API (ABI break)
+- Timestamps keep their nanoseconds and UTC offset. `btoon_timestamp_t` gains
+  `nanoseconds`, `timezone_offset` and `has_timezone`, and
+  `btoon_value_create_timestamp(seconds, nanoseconds)` takes the nanoseconds;
+  `btoon_value_create_timestamp_with_offset()` is new. Before, both were lost on decode.
+- Errors have codes: `btoon_status_t` (`BTOON_OK`, the SPEC §7 codes,
+  `BTOON_ERROR_INVALID_ARGUMENT`, `BTOON_ERROR_OUT_OF_MEMORY`) and `btoon_status_name()`.
+  `btoon_result_t` gains `status`, and `btoon_decode()` gains a `btoon_status_t* status`
+  parameter before `error`.
+- A zero-initialized options struct means the defaults. Before, zeroed encode options
+  turned tabular off, and zeroed decode options turned off strict mode and
+  decompression. `btoon_encode_options_t::auto_tabular` is now `no_tabular`, and
+  `btoon_decode_options_t`'s `decompress` and `strict` are now `no_decompress` and
+  `non_strict`. Both structs gain an HMAC key (`hmac_key`, `hmac_key_len`; an empty key
+  is an error), and the decode options gain `max_depth`, `max_decompressed_size` and
+  `max_values` (0 means the default).
+- Every type can be created: `btoon_value_create_date`, `_datetime`, `_bigint`,
+  `_vector_float` and `_vector_double` are new, as is `btoon_spec_version()`.
+- Input is checked instead of trusted: a `NULL` pointer with a nonzero length, an
+  unknown type tag, a duplicate map key or a `NULL` element is `invalid_argument`, and a
+  hand-built tree deeper than 128 levels, the encoder's limit (or a cycle), is `max_depth`.
+- Empty buffers decode to `ptr == NULL, len == 0`. Before, they were copied with `memcpy`
+  from a null pointer (undefined behavior).
+- capi.h documents ownership: who frees values, results and messages, and with what.
+- `BTOON_API` no longer depends on `BTOON_BUILD_SHARED` (see Windows below).
+
+### Changed: the C++ API
+- `Timestamp::to_milliseconds()` and `to_microseconds()` overflowed (undefined behavior)
+  for valid 12-byte timestamps. They now throw `invalid_argument` when the instant
+  doesn't fit in int64, or when nanoseconds are 10^9 or more, and INT64_MIN stays
+  reachable **(behavior change)**. They're no longer inline.
+- `StreamDecoder` couldn't read anything when `max_decompressed_size` was below 64 KiB.
+  Its reads now shrink to the limit; a value larger than the limit still fails with
+  `size_limit`.
+- Schemas:
+  - Removed `SchemaRegistry::validateWithSchema`, `migrateToLatest`, `saveToFile` and
+    `loadFromFile`. They were declared but never defined, so any call failed to link.
+    Persist a registry with `encode(registry.toValue())` and `SchemaRegistry::fromValue()`
+    **(removed)**.
+  - `isCompatibleWith()` did the opposite of the `EvolutionStrategy` comments. STRICT now
+    accepts an identical schema, ADDITIVE rejects new required fields, and
+    BACKWARD_COMPATIBLE rejects type changes other than widening, new required fields and
+    new constraints. The rules are documented on `EvolutionStrategy` **(behavior
+    change)**.
+  - `canMigrateTo()` ran the migration on an empty map to see whether one existed, so
+    user code ran on data it wasn't written for and its exceptions escaped
+    (`std::out_of_range` from `map::at`). It's now a lookup **(behavior change)**.
+  - `SchemaInferrer::infer()`, `inferFromArray()` and `inferSchema()` take a map or an
+    array of maps. Anything else throws `invalid_argument`; it used to produce a one-field
+    `"value"` or `"items"` schema that rejected its own input **(behavior change)**.
+  - Inferred schemas accepted neither float32 nor float64 vectors; they infer as
+    `vector_float` and `vector_double` now.
+  - `merge()` kept the first schema's constraints, so the merged schema rejected the
+    others' data. Constraints now merge: the smaller `min`, the larger `max`, the union of
+    `enum`s; others are kept only if equal.
+  - A schema or registry definition that isn't a map, and `registerSchema(nullptr)`
+    (which crashed), throw `invalid_argument`. Schema APIs throw only `BtoonException` for
+    bad input.
+- Validator:
+  - `SecurityValidator` moved to experimental/. Its byte-scanning checks reported a flat
+    array of 200 empty maps as "excessive nesting", and `validate()` passed that on as a
+    warning. The decoder enforces depth, length and decompression limits exactly, and
+    `validate()` reports them as errors **(removed)**.
+  - `quickCheck()` and the free `isValid()` looked only at the first byte, so truncated
+    input passed. They now report whether the data decodes, with the validator's
+    settings **(behavior change)**.
+  - `UTF8Validator::sanitize()` copied overlong forms, surrogates and code points above
+    U+10FFFF into its output, and a bad continuation byte swallowed the valid characters
+    after it. Each maximal invalid subsequence now becomes one U+FFFD, and the libFuzzer
+    target checks that the output is always valid.
+  - validator.h no longer defines `NOMINMAX`. `Stats::total_size` is filled in. The
+    `ValidationOptions` that do nothing (`check_circular_references`, `limit_recursion`,
+    and now `fast_mode`) say so.
+- zero_copy.h:
+  - `ZeroCopyDecoder` and `ValueView` (with `ArrayView` and `MapView`) moved to
+    experimental/. The decoder handled only part of the format and ignored its options
+    **(removed)**.
+  - `btoon_decode_zero_copy()` was declared but never defined **(removed)**.
+  - `BufferPool` buffers went back to the pool only when non-empty, so
+    `buffers_in_use` never went down. Every buffer returns now.
+  - `ZeroCopyEncoder::encode_into()` fails with `size_limit` instead of `generic` when
+    the buffer is too small.
+
+### Changed: building, and Windows
+- `NOMINMAX` and `WIN32_LEAN_AND_MEAN` were PUBLIC compile definitions, so they leaked
+  into every consumer and changed what its `<windows.h>` declared (`ShellExecuteA` stopped
+  compiling). They're private to the library now, and the public headers compile with
+  `<windows.h>`'s `min`/`max` macros **(behavior change for consumers that relied on
+  them)**.
+- CMakeLists.txt overrode `CMAKE_MSVC_RUNTIME_LIBRARY`, so the release workflow's static
+  runtime was ignored and `btoon.exe` needed the VC++ redistributable. The library now
+  leaves the setting to the caller (CMake's default is still the DLL runtime). The
+  released Windows tools use the static runtime, and the release workflow fails if they
+  import the VC++ runtime.
+- On Windows the library is always static; `BUILD_SHARED_LIBS` is ignored for it, with a
+  warning. A shared build exported nothing, since the C++ API has no DLL export markers.
+  vcpkg's port is static too **(behavior change)**.
+
+### Fixed: the command-line tools
+- `btoon-schema generate`:
+  - The C++ threw `bad_variant_access` on valid data: an integer in a `uint` or `number`
+    field (a decoder returns the smallest form). It now reads every type a field
+    accepts, and throws `BtoonException` (`invalid_argument`) for a missing field or the
+    wrong type. Field names become identifiers (`first-name` is `first_name`, keywords
+    get a `_` suffix; two fields that collide are an error), and the struct is written
+    outside `namespace btoon`; `-n NAMESPACE` wraps it in one **(behavior change)**.
+  - The Python failed at import when an optional field came before a required one. The
+    dataclass now lists required fields first, uses identifiers, doesn't import `btoon`,
+    and `from_dict()` raises `KeyError` for a missing required field.
+  - TypeScript quotes property names that aren't identifiers.
+  - `-o -` writes to standard output. The help listed go and rust, which never existed.
+- `btoon-schema migrate` always failed between versions, since the command line can't
+  register a migration function. It now carries the data unchanged to a newer version
+  that `isCompatibleWith()` accepts, then validates it against that version.
+- `btoon-schema infer` fails on data that isn't a map or an array of maps.
+
+### Docs
+- Corrected: performance.md said `Validator` checks structure without allocating, and
+  delta_codec.h said its element cap protected against amplification. `MemoryPool`'s
+  header promised a thread-safe option and configurable growth, which don't exist.
+- API.md documents the C API's codes, defaults and ownership, the schema evolution
+  rules, and the zero-copy buffers.
+
+Checked and already fixed in 0.1.5: btoon-convert's CSV numbers (`Nan`, `0x10`), batch
+output paths, `--batch-size abc`, XML escaping, NaN payloads in the CLI's `$f32`/`$f64`
+tags, and btoon.1's exit codes.
+
 ## [0.2.0] - 2026-11-14
 
-Implements spec 0.2 (docs/SPEC.md §11.1). The wire format is unchanged: every valid 0.1
+Implements spec 0.2 (docs/SPEC.md §11.2). The wire format is unchanged: every valid 0.1
 document that fits the new limits decodes to the same value. Decisions D23–D26 in the
 workspace's docs/DECISIONS.md record why.
 

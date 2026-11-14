@@ -6,7 +6,8 @@
 //   * decoding either succeeds or throws BtoonException — any other exception,
 //     crash or sanitizer report is a bug;
 //   * whatever decodes re-encodes canonically and decodes back to the same value;
-//   * the validator never throws anything but BtoonException.
+//   * the validator never throws anything but BtoonException;
+//   * UTF8Validator::sanitize() returns valid UTF-8 and keeps valid input unchanged.
 //
 //   cmake -B build-fuzz -DCMAKE_CXX_COMPILER=$(brew --prefix llvm)/bin/clang++ \
 //         -DBUILD_FUZZ_TESTS=ON -DBUILD_TESTS=OFF -DBUILD_TOOLS=OFF
@@ -16,6 +17,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <span>
+#include <string>
+#include <string_view>
 
 #include "btoon/btoon.h"
 #include "btoon/validator.h"
@@ -59,5 +62,10 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         (void)validator.validate(input);
     } catch (const btoon::BtoonException&) {
     }
+    // UTF8Validator::sanitize() always returns valid UTF-8 and leaves valid UTF-8 alone.
+    const std::string_view text(reinterpret_cast<const char*>(data), size);
+    const std::string clean = btoon::UTF8Validator::sanitize(text);
+    if (!btoon::UTF8Validator::isValid(clean)) std::abort();
+    if (btoon::UTF8Validator::isValid(text) && clean != text) std::abort();
     return 0;
 }

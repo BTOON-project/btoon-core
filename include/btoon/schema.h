@@ -86,13 +86,26 @@ struct SchemaField {
 using MigrationFunction = std::function<Value(const Value&)>;
 
 /**
- * @brief Schema evolution strategy
+ * @brief Schema evolution strategy: which newer versions Schema::isCompatibleWith() accepts.
+ *
+ * A field matches when its name, type, `required` flag and constraints are equal.
  */
 enum class EvolutionStrategy {
-    STRICT,           // No changes allowed
-    ADDITIVE,         // Only new optional fields allowed
-    BACKWARD_COMPATIBLE,  // Changes that maintain backward compatibility
-    FLEXIBLE          // Any changes allowed with migrations
+    /// No changes: the newer schema has exactly the same fields.
+    STRICT,
+    /// Only new optional fields: every existing field matches, and every added field is
+    /// optional.
+    ADDITIVE,
+    /// Data written for the old schema (with only the fields it lists) validates under
+    /// the newer one. Allowed:
+    /// adding optional fields, removing fields (unless the newer schema is STRICT, which
+    /// rejects unknown fields), widening a type ("int" or "uint" to "number" or "bigint",
+    /// "float" to "number", anything to "any"), making a field optional, and dropping its
+    /// constraints. Not allowed: a required field the old schema doesn't require, another
+    /// type change, or changed or added constraints.
+    BACKWARD_COMPATIBLE,
+    /// Any change; data is converted with migrations (Schema::addMigration).
+    FLEXIBLE
 };
 
 /**
@@ -131,7 +144,12 @@ public:
     std::vector<SchemaField> getFields() const;
     
     // Evolution and compatibility
-    bool isCompatibleWith(const Schema& other) const;
+    /// True if `newer` is an allowed evolution of this schema under this schema's
+    /// EvolutionStrategy (see EvolutionStrategy). Names and versions aren't compared.
+    bool isCompatibleWith(const Schema& newer) const;
+    /// True if data can be migrated to `target`'s version: the versions are equal, or a
+    /// migration from this version to that one was added with addMigration(). Doesn't run
+    /// the migration.
     bool canMigrateTo(const Schema& target) const;
     void setEvolutionStrategy(EvolutionStrategy strategy);
     EvolutionStrategy getEvolutionStrategy() const;
@@ -140,6 +158,9 @@ public:
     void addMigration(const SchemaVersion& from_version, 
                       const SchemaVersion& to_version,
                       MigrationFunction migration);
+    /// Returns `value` unchanged if `target_version` is this schema's version, the result
+    /// of the migration from this version to `target_version` if one was added, and
+    /// std::nullopt otherwise. Exceptions thrown by the migration function propagate.
     std::optional<Value> migrate(const Value& value, const SchemaVersion& target_version) const;
     
     // Serialization
@@ -175,7 +196,7 @@ public:
     SchemaRegistry(const SchemaRegistry&) = delete;
     SchemaRegistry& operator=(const SchemaRegistry&) = delete;
     
-    // Registration
+    // Registration. A null schema throws BtoonException (invalid_argument).
     void registerSchema(const std::string& name, std::shared_ptr<Schema> schema);
     void registerSchema(std::shared_ptr<Schema> schema);  // Uses schema's name
     
@@ -187,21 +208,13 @@ public:
     
     // Validation with auto-detection
     bool validate(const Value& value) const;
-    std::pair<bool, std::string> validateWithSchema(const Value& value) const;
-    
-    // Migration
-    std::optional<Value> migrateToLatest(const std::string& schema_name, 
-                                         const Value& value,
-                                         const SchemaVersion& from_version) const;
     
     // Management
     void removeSchema(const std::string& name);
     void removeSchema(const std::string& name, const SchemaVersion& version);
     void clear();
     
-    // Persistence
-    void saveToFile(const std::string& filename) const;
-    void loadFromFile(const std::string& filename);
+    // Persistence: encode() toValue() to store a registry, and fromValue() to load it.
     Value toValue() const;
     static SchemaRegistry fromValue(const Value& value);
 
@@ -283,17 +296,27 @@ public:
     SchemaInferrer& operator=(const SchemaInferrer&) = delete;
     
     /**
-     * @brief Infer schema from a single value
+     * @brief Infer a schema from a map, or from an array of maps (see inferFromArray()).
+     *
+     * A schema describes maps, so any other value throws BtoonException
+     * (invalid_argument): a schema inferred from it couldn't validate it.
      */
     Schema infer(const Value& value, const std::string& name = "InferredSchema");
     
     /**
-     * @brief Infer schema from array of similar objects
+     * @brief Infer the schema of each element of an array of maps (rows).
+     *
+     * An empty array gives a schema without fields. An element that isn't a map throws
+     * BtoonException (invalid_argument).
      */
     Schema inferFromArray(const Array& array, const std::string& name = "InferredSchema");
     
     /**
-     * @brief Merge multiple inferred schemas
+     * @brief Merge multiple inferred schemas into one that accepts what each accepts.
+     *
+     * Field types widen as in inference ("number", or "any"). Constraints are merged too:
+     * the smaller minimum and the larger maximum, the union of enums; a constraint that
+     * only some schemas have, or that differs otherwise, is dropped.
      */
     Schema merge(std::vector<Schema>&& schemas, const std::string& name = "MergedSchema");
     

@@ -1,18 +1,9 @@
-#ifdef _WIN32
-    #ifndef WIN32_LEAN_AND_MEAN
-        #define WIN32_LEAN_AND_MEAN
-    #endif
-    #include <winsock2.h>
-    #include <ws2tcpip.h>
-#else
-    #include <arpa/inet.h>
-#endif
-
+// SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
+// SPDX-License-Identifier: MIT
 #include "btoon/validator.h"
 #include "internal.h"
 #include "btoon/decoder.h"
 #include <cmath>
-#include <stack>
 #include <unordered_set>
 
 namespace btoon {
@@ -65,77 +56,58 @@ int UTF8Validator::getUTF8SequenceLength(uint8_t lead) {
 }
 
 bool UTF8Validator::isValid(std::string_view str) {
-    size_t i = 0;
-    while (i < str.length()) {
-        uint8_t lead = static_cast<uint8_t>(str[i]);
-        int len = getUTF8SequenceLength(lead);
-        
-        if (len == 0) return false;
-        if (i + len > str.length()) return false;
-        
-        // Check continuation bytes
-        for (int j = 1; j < len; j++) {
-            uint8_t byte = static_cast<uint8_t>(str[i + j]);
-            if ((byte & 0xC0) != 0x80) return false;
-        }
-        
-        // Decode and validate code point
-        uint32_t cp = 0;
-        if (len == 1) {
-            cp = lead;
-        } else if (len == 2) {
-            cp = ((lead & 0x1F) << 6) | (str[i + 1] & 0x3F);
-            if (cp < 0x80) return false;  // Overlong encoding
-        } else if (len == 3) {
-            cp = ((lead & 0x0F) << 12) | ((str[i + 1] & 0x3F) << 6) | (str[i + 2] & 0x3F);
-            if (cp < 0x800) return false;  // Overlong encoding
-        } else if (len == 4) {
-            cp = ((lead & 0x07) << 18) | ((str[i + 1] & 0x3F) << 12) |
-                 ((str[i + 2] & 0x3F) << 6) | (str[i + 3] & 0x3F);
-            if (cp < 0x10000) return false;  // Overlong encoding
-        }
-        
-        if (!isValidCodePoint(cp)) return false;
-        
-        i += static_cast<size_t>(len);
-    }
-    
-    return true;
+    return detail::is_valid_utf8(str);
 }
 
 std::string UTF8Validator::sanitize(std::string_view str) {
-    std::string result;
-    result.reserve(str.length());
-    
+    // Each maximal subpart of an ill-formed sequence becomes one U+FFFD (Unicode §3.9,
+    // "U+FFFD Substitution of Maximal Subparts"), as browsers and ICU do. Before 0.3.0
+    // overlong forms, surrogates and code points above U+10FFFF were copied through, and
+    // a bad continuation byte swallowed the valid characters after it.
+    static constexpr char kReplacement[] = "\xEF\xBF\xBD";
+    std::string out;
+    out.reserve(str.size());
+    const auto* s = reinterpret_cast<const uint8_t*>(str.data());
+    const size_t n = str.size();
     size_t i = 0;
-    while (i < str.length()) {
-        uint8_t lead = static_cast<uint8_t>(str[i]);
-        int len = getUTF8SequenceLength(lead);
-        
-        if (len == 0 || i + len > str.length()) {
-            // Invalid sequence, replace with replacement character
-            result += "\xEF\xBF\xBD";  // U+FFFD
-            i++;
+    while (i < n) {
+        const uint8_t c = s[i];
+        if (c < 0x80) {
+            out += static_cast<char>(c);
+            ++i;
             continue;
         }
-        
-        // Check if valid sequence
-        bool valid = true;
-        for (int j = 1; j < len && valid; j++) {
-            uint8_t byte = static_cast<uint8_t>(str[i + j]);
-            if ((byte & 0xC0) != 0x80) valid = false;
+        size_t need = 0;
+        uint8_t lo = 0x80, hi = 0xBF;  // allowed range of the second byte
+        if (c >= 0xC2 && c <= 0xDF) {
+            need = 1;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            need = 2;
+            if (c == 0xE0) lo = 0xA0;  // no overlongs
+            if (c == 0xED) hi = 0x9F;  // no surrogates
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            need = 3;
+            if (c == 0xF0) lo = 0x90;  // no overlongs
+            if (c == 0xF4) hi = 0x8F;  // nothing above U+10FFFF
         }
-        
-        if (valid) {
-            result.append(str.data() + i, static_cast<size_t>(len));
+        size_t good = 1;  // bytes of a valid prefix, the lead included
+        if (need != 0) {
+            while (good <= need && i + good < n) {
+                const uint8_t b = s[i + good];
+                const uint8_t low = good == 1 ? lo : 0x80;
+                const uint8_t high = good == 1 ? hi : 0xBF;
+                if (b < low || b > high) break;
+                ++good;
+            }
+        }
+        if (need != 0 && good == need + 1) {
+            out.append(str.data() + i, good);
         } else {
-            result += "\xEF\xBF\xBD";  // U+FFFD
+            out.append(kReplacement, 3);
         }
-        
-        i += static_cast<size_t>(len);
+        i += good;
     }
-    
-    return result;
+    return out;
 }
 
 // ===== TypeValidator Implementation =====
@@ -169,132 +141,6 @@ bool TypeValidator::validateExtension(const Extension& ext) {
     return true;
 }
 
-// ===== SecurityValidator Implementation =====
-
-std::vector<std::string> SecurityValidator::checkSecurity(std::span<const uint8_t> data) {
-    std::vector<std::string> issues;
-    
-    if (checkForZipBomb(data)) {
-        issues.push_back("Potential zip bomb detected (excessive compression ratio)");
-    }
-    
-    if (!checkNestingDepth(data)) {
-        issues.push_back("Excessive nesting depth detected");
-    }
-    
-    if (!checkSizeClaims(data)) {
-        issues.push_back("Unreasonable size claims detected");
-    }
-    
-    return issues;
-}
-
-bool SecurityValidator::checkForZipBomb(std::span<const uint8_t> data) {
-    // Check if data claims to expand to unreasonable size
-    // Look for compression headers
-    if (data.size() >= 16) {
-        // Check for BTOON compression header
-        uint32_t magic = detail::load_be32(data.data());
-        if (magic == 0x42544F4E) {  // "BTON"
-            uint32_t uncompressed = detail::load_be32(data.data() + 12);
-            uint32_t compressed = detail::load_be32(data.data() + 8);
-            
-            // Check for extreme compression ratio (>1000:1)
-            if (compressed > 0 && uncompressed / compressed > 1000) {
-                return true;
-            }
-            
-            // Check for unreasonable uncompressed size (>1GB)
-            if (uncompressed > 1024 * 1024 * 1024) {
-                return true;
-            }
-        }
-    }
-    
-    return false;
-}
-
-bool SecurityValidator::checkNestingDepth(std::span<const uint8_t> data, size_t maxDepth) {
-    size_t pos = 0;
-    size_t depth = 0;
-    std::stack<uint8_t> typeStack;
-    
-    while (pos < data.size()) {
-        uint8_t type = data[pos];
-        
-        // Check for container types
-        if ((type >= 0x90 && type <= 0x9f) ||  // fixarray
-            type == 0xdc || type == 0xdd ||     // array16/32
-            (type >= 0x80 && type <= 0x8f) ||   // fixmap
-            type == 0xde || type == 0xdf) {     // map16/32
-            
-            depth++;
-            if (depth > maxDepth) {
-                return false;
-            }
-            typeStack.push(type);
-        }
-        
-        // Skip to next element (simplified - doesn't fully parse)
-        pos++;
-        
-        // This is a simplified check - a full implementation would
-        // properly parse the format to track nesting
-    }
-    
-    return true;
-}
-
-bool SecurityValidator::checkSizeClaims(std::span<const uint8_t> data) {
-    size_t pos = 0;
-    BoundsChecker checker(data);
-    
-    while (pos < data.size()) {
-        auto byte = checker.readByte(pos);
-        if (!byte) break;
-        
-        uint8_t type = *byte;
-        
-        // Check string/binary size claims
-        if (type == 0xd9) {  // str8
-            auto size_byte = checker.readByte(pos);
-            if (!size_byte) return false;
-            size_t size = *size_byte;
-            if (!checker.canRead(pos, size)) return false;
-            pos += size;
-        } else if (type == 0xda) {  // str16
-            if (!checker.canRead(pos, 2)) return false;
-            uint16_t size = detail::load_be16(&data[pos]);
-            pos += 2;
-            if (!checker.canRead(pos, size)) return false;
-            pos += size;
-        } else if (type == 0xdb) {  // str32
-            if (!checker.canRead(pos, 4)) return false;
-            uint32_t size = detail::load_be32(&data[pos]);
-            pos += 4;
-            if (size > 1024 * 1024 * 100) return false;  // 100MB limit
-            if (!checker.canRead(pos, size)) return false;
-            pos += size;
-        } else if (type >= 0xa0 && type <= 0xbf) {  // fixstr
-            size_t size = type & 0x1f;
-            if (!checker.canRead(pos, size)) return false;
-            pos += size;
-        } else {
-            // Skip other types (simplified)
-            if (type < 0x80) {
-                // Positive fixint - single byte
-            } else if (type >= 0xe0) {
-                // Negative fixint - single byte
-            } else {
-                // Other types would need proper parsing
-                break;  // Simplified for now
-            }
-        }
-    }
-    
-    return true;
-}
-
 // ===== Validator Implementation =====
 
 class Validator::ValidatorImpl {
@@ -322,6 +168,7 @@ public:
         
         if (options.collect_stats) {
             result.stats = ValidationResult::Stats{};
+            result.stats->total_size = data.size();
         }
         
         // Check total size
@@ -361,14 +208,6 @@ public:
                 if (compressed_size > 0 && uncompressed_size / compressed_size > 1000) {
                     result.addWarning("Extremely high compression ratio detected");
                 }
-            }
-        }
-        
-        // Security checks
-        if (!options.fast_mode) {
-            auto security_issues = SecurityValidator::checkSecurity(data);
-            for (const auto& issue : security_issues) {
-                result.addWarning(issue);
             }
         }
         
@@ -543,13 +382,19 @@ public:
         return result;
     }
     
+    // Whether the bytes decode with the settings validate() uses.
     bool quickCheckData(std::span<const uint8_t> data) const {
         if (data.empty() || data.size() > options.max_total_size) {
             return false;
         }
-        
-        // Every first byte starts a valid MessagePack value except the reserved 0xc1.
-        return data[0] != 0xc1;
+        DecodeOptions decode_options;
+        if (decodeOptions(decode_options)) return false;
+        try {
+            (void)decode(data, decode_options);
+            return true;
+        } catch (...) {
+            return false;
+        }
     }
 };
 

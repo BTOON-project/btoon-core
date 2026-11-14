@@ -4,11 +4,13 @@
 // Reads a stream of concatenated bare BTOON documents one value at a time.
 // Input is buffered incrementally: when a value is incomplete (ErrorCode::
 // truncated) more bytes are read, in geometrically growing chunks, up to
-// DecodeOptions::max_decompressed_size of buffered data.
+// DecodeOptions::max_decompressed_size of buffered data. A value that doesn't fit in
+// that limit fails with ErrorCode::size_limit.
 #include "btoon/stream_decoder.h"
 #include "btoon/decoder.h"
 #include "internal.h"
 
+#include <algorithm>
 #include <istream>
 #include <vector>
 
@@ -50,10 +52,14 @@ public:
     }
 
 private:
+    // Reads up to `n` more bytes, never buffering more than max_decompressed_size: a limit
+    // below the chunk size shrinks the chunk instead of failing before anything is read.
     void fill(size_t n) {
-        if (buf_.size() - pos_ + n > options_.max_decompressed_size) {
+        const size_t buffered = buf_.size() - pos_;
+        if (buffered >= options_.max_decompressed_size) {
             detail::fail(ErrorCode::size_limit, "stream value exceeds max_decompressed_size");
         }
+        n = std::min(n, options_.max_decompressed_size - buffered);
         size_t old = buf_.size();
         buf_.resize(old + n);
         stream_.read(reinterpret_cast<char*>(buf_.data() + old), static_cast<std::streamsize>(n));

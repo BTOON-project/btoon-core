@@ -23,11 +23,11 @@
 
 // Single source of truth for the library version (CMake parses these lines).
 #define BTOON_VERSION_MAJOR 0
-#define BTOON_VERSION_MINOR 2
+#define BTOON_VERSION_MINOR 3
 #define BTOON_VERSION_PATCH 0
-#define BTOON_VERSION_STRING "0.2.0"
+#define BTOON_VERSION_STRING "0.3.0"
 /// Version of docs/SPEC.md implemented by this library.
-#define BTOON_SPEC_VERSION "0.2"
+#define BTOON_SPEC_VERSION "0.3"
 
 #include "btoon/compression.h"
 #include <algorithm>
@@ -142,8 +142,12 @@ struct Timestamp {
     static Timestamp from_microseconds(int64_t micros);
     static Timestamp from_milliseconds(int64_t millis);
 
-    int64_t to_microseconds() const { return seconds * 1000000LL + nanoseconds / 1000; }
-    int64_t to_milliseconds() const { return seconds * 1000LL + nanoseconds / 1000000; }
+    /// The instant in whole microseconds (or milliseconds) since the epoch, rounded down.
+    /// A timestamp's seconds cover all of int64, so an instant more than about 292,000
+    /// (microseconds) or 292 million (milliseconds) years from 1970 doesn't fit. Those, and
+    /// nanoseconds of 10^9 or more, throw BtoonException with ErrorCode::invalid_argument.
+    int64_t to_microseconds() const;
+    int64_t to_milliseconds() const;
     double to_seconds_double() const {
         return static_cast<double>(seconds) + static_cast<double>(nanoseconds) / 1e9;
     }

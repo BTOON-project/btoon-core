@@ -277,40 +277,80 @@ TEST_F(SchemaInferenceTest, MergeSchemas) {
     EXPECT_FALSE(age_field->required);  // Only in schema3
 }
 
+// A schema describes maps. Before 0.3.0 a scalar, or an array of scalars, got a one-field
+// schema ("value" or "items") that rejected the very data it was inferred from.
 TEST_F(SchemaInferenceTest, InferFromPrimitiveValue) {
-    Value primitive = String("test");
-    
     SchemaInferrer inferrer;
-    Schema schema = inferrer.infer(primitive, "StringSchema");
-    
-    auto fields = schema.getFields();
-    EXPECT_EQ(fields.size(), 1u);
-    
-    auto value_field = schema.getField("value");
-    ASSERT_TRUE(value_field.has_value());
-    EXPECT_EQ(value_field->type, "string");
+    for (const Value& v : {Value(String("test")), Value(Int(5)), Value(nullptr), Value(VectorFloat{{1.0f}})}) {
+        try {
+            inferrer.infer(v, "StringSchema");
+            ADD_FAILURE() << "inferred a schema from a " << v.type_name();
+        } catch (const BtoonException& e) {
+            EXPECT_EQ(e.code(), ErrorCode::invalid_argument);
+        }
+    }
 }
 
 TEST_F(SchemaInferenceTest, InferFromArrayOfPrimitives) {
-    Array primitive_array = Array{
-        Int(1), Int(2), Int(3), Int(4), Int(5)
-    };
-    
     SchemaInferrer inferrer;
-    Schema schema = inferrer.inferFromArray(primitive_array);
-    
-    auto fields = schema.getFields();
-    EXPECT_EQ(fields.size(), 1u);
-    
-    auto items_field = schema.getField("items");
-    ASSERT_TRUE(items_field.has_value());
-    EXPECT_EQ(items_field->type, "int");
-    ASSERT_TRUE(items_field->constraints.has_value());
-    
-    // Check inferred constraints
-    auto constraints = std::get<Map>(items_field->constraints.value());
-    EXPECT_EQ(std::get<Int>(constraints["min"]), 1);
-    EXPECT_EQ(std::get<Int>(constraints["max"]), 5);
+    const Array primitive_array{Int(1), Int(2), Int(3), Int(4), Int(5)};
+    EXPECT_THROW(inferrer.inferFromArray(primitive_array), BtoonException);
+    EXPECT_THROW(inferSchema(Value(primitive_array)), BtoonException);
+    const Array mixed{Map{{"a", Int(1)}}, Int(2)};
+    EXPECT_THROW(inferrer.inferFromArray(mixed), BtoonException);
+    EXPECT_TRUE(inferrer.inferFromArray(Array{}).getFields().empty());
+}
+
+// Review 2026-11-13: inferred schemas must accept the data they were inferred from.
+TEST(SchemaInferenceFixes, InferredSchemasAcceptTheirOwnInput) {
+    const Value record = Map{{"id", Int(9007199254740993LL)},
+                             {"big", Uint(UINT64_MAX)},
+                             {"low", Int(INT64_MIN)},
+                             {"emb", VectorFloat{{0.5f, 1.5f}}},
+                             {"emb64", VectorDouble{{0.5}}},
+                             {"at", Timestamp(1, 2)},
+                             {"tag", String("x")}};
+    const Schema single = inferSchema(record);
+    EXPECT_EQ(single.getField("emb")->type, "vector_float");
+    EXPECT_EQ(single.getField("emb64")->type, "vector_double");
+    EXPECT_TRUE(single.validate(record)) << single.validateWithErrors(record).front();
+    Array rows;
+    for (int i = 0; i < 20; ++i) {
+        rows.push_back(Map{{"id", Int(i)}, {"emb", VectorFloat{{float(i)}}}, {"s", String(i % 2 ? "a" : "b")}});
+    }
+    const Schema table = inferSchema(Value(rows));
+    for (const auto& row : rows) EXPECT_TRUE(table.validate(row));
+}
+
+// merge() kept the first schema's constraints, so the merged schema rejected the other
+// schemas' data (review 2026-11-13, probe 6).
+TEST(SchemaInferenceFixes, MergedSchemasAcceptEveryPartsData) {
+    SchemaInferrer inferrer;
+    const Array part1{Map{{"s", String("a")}, {"n", Int(1)}, {"x", Int(5)}},
+                      Map{{"s", String("a")}, {"n", Int(3)}, {"x", Int(6)}}};
+    const Array part2{Map{{"s", String("b")}, {"n", Float(-2.5)}, {"x", String("text")}},
+                      Map{{"s", String("b")}, {"n", Int(10)}, {"x", String("more")}}};
+    std::vector<Schema> parts;
+    parts.push_back(inferrer.infer(Value(part1)));
+    parts.push_back(inferrer.infer(Value(part2)));
+    const Schema merged = inferrer.merge(std::move(parts));
+    for (const Array* part : {&part1, &part2}) {
+        for (const auto& row : *part) {
+            EXPECT_TRUE(merged.validate(row)) << merged.validateWithErrors(row).front();
+        }
+    }
+    // The merged bounds and enum are the union, not looser than needed.
+    const auto s = std::get<Map>(*merged.getField("s")->constraints);
+    EXPECT_EQ(s.at("enum"), Value(Array{String("a"), String("b")}));
+    const auto n = std::get<Map>(*merged.getField("n")->constraints);
+    EXPECT_EQ(merged.getField("n")->type, "number");
+    EXPECT_EQ(n.at("min"), Value(Float(-2.5)));
+    EXPECT_EQ(n.at("max"), Value(Int(10)));
+    EXPECT_FALSE(merged.validate(Map{{"s", String("c")}, {"n", Int(1)}, {"x", Int(5)}}));
+    EXPECT_FALSE(merged.validate(Map{{"s", String("a")}, {"n", Int(11)}, {"x", Int(5)}}));
+    // Mixed types become "any", without constraints.
+    EXPECT_EQ(merged.getField("x")->type, "any");
+    EXPECT_FALSE(merged.getField("x")->constraints.has_value());
 }
 
 TEST_F(SchemaInferenceTest, ConvenienceFunction) {

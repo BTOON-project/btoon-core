@@ -308,7 +308,9 @@ struct GrowBuf {
     size_t used = 0;
     size_t limit;
     explicit GrowBuf(size_t lim, size_t input_size) : limit(lim) {
-        size_t initial = std::min(limit, std::max<size_t>(64 * 1024, input_size * 4));
+        // 4x the input to start with; saturating, since input_size * 4 can wrap on 32-bit.
+        const size_t guess = input_size > limit / 4 ? limit : input_size * 4;
+        size_t initial = std::min(limit, std::max<size_t>(64 * 1024, guess));
         out.resize(initial);
     }
     // Returns false if already at the limit.
@@ -391,11 +393,87 @@ std::vector<uint8_t> lz4_compress(std::span<const uint8_t> data, int level) {
     return out;
 }
 
+// Checks the structure of an LZ4 block (lz4_Block_format.md) as docs/SPEC.md §6 requires,
+// before liblz4 decodes it. liblz4 skips the end-of-block checks, and accepts offset 0,
+// for a sequence it decodes on its fast path, which it takes while at least 32 bytes of
+// output remain. This pass parses the tokens, the literal and match lengths (with their
+// 255-continuation bytes) and the offsets, and tracks the output position without
+// writing anything. Every violation is invalid_envelope:
+//   - a match offset of 0, or one that reaches back before the start of the output;
+//   - output that isn't exactly `size` bytes;
+//   - a block that ends with a match, or input that ends inside a sequence;
+//   - if the block has a match: a final literal run shorter than 5 bytes, or a last match
+//     that starts less than 12 bytes before the end of the output.
+// A block without matches is one literal run, valid at any length. The final token's
+// match-length bits are ignored. Positions are 64-bit, so 32-bit targets can't wrap.
+void lz4_check_block(std::span<const uint8_t> in, size_t size) {
+    constexpr uint64_t kMinMatch = 4;      // a match copies at least 4 bytes
+    constexpr uint64_t kLastLiterals = 5;  // the last 5 bytes of output are literals
+    constexpr uint64_t kMatchLimit = 12;   // a match starts at least 12 bytes before the end
+    const uint64_t n = in.size();
+    const uint64_t out_size = size;
+    uint64_t si = 0;  // input position
+    uint64_t di = 0;  // output position
+    bool has_match = false;
+    uint64_t last_match = 0;   // where the last match starts in the output
+    uint64_t last_literals = 0;  // length of the final literal run
+    if (n == 0) corrupt("lz4", "is truncated");
+    // A length is a 4-bit token field plus, when that's 15, bytes up to and including the
+    // first one below 255. `cap` bounds it: past that the block is invalid anyway, and the
+    // sum can't overflow.
+    auto read_length = [&](uint64_t length, uint64_t cap, const char* too_long) {
+        if (length != 15) return length;
+        for (;;) {
+            if (si >= n) corrupt("lz4", "is truncated");
+            const uint8_t b = in[si++];
+            length += b;
+            if (length > cap) corrupt("lz4", too_long);
+            if (b != 255) return length;
+        }
+    };
+    for (;;) {
+        if (si >= n) corrupt("lz4", "ends with a match instead of a literals-only sequence");
+        const uint8_t token = in[si++];
+        const uint64_t literals = read_length(token >> 4, n, "is truncated");
+        if (literals > n - si) corrupt("lz4", "is truncated");
+        if (literals > out_size - di) corrupt("lz4", "decompresses to more than the declared size");
+        si += literals;
+        di += literals;
+        if (si == n) {  // the last sequence: literals only
+            last_literals = literals;
+            break;
+        }
+        // A match follows the literals.
+        if (n - si < 2) corrupt("lz4", "is truncated");
+        const uint64_t offset = uint64_t(in[si]) | (uint64_t(in[si + 1]) << 8);
+        si += 2;
+        if (offset == 0) corrupt("lz4", "has a match offset of 0");
+        if (offset > di) corrupt("lz4", "has a match offset that reaches before the start of the output");
+        const uint64_t length = read_length(token & 15u, out_size, "decompresses to more than the declared size") + kMinMatch;
+        if (length > out_size - di) corrupt("lz4", "decompresses to more than the declared size");
+        has_match = true;
+        last_match = di;
+        di += length;
+    }
+    if (di != out_size) corrupt("lz4", "decompressed size does not match the header");
+    if (has_match) {
+        if (last_literals < kLastLiterals) corrupt("lz4", "doesn't end with at least 5 literal bytes");
+        if (out_size - last_match < kMatchLimit) {
+            corrupt("lz4", "has a match that starts less than 12 bytes before the end");
+        }
+    }
+}
+
 std::vector<uint8_t> lz4_decompress(std::span<const uint8_t> in, size_t expected) {
-    // An LZ4 block expands at most ~255x; reject impossible size claims up front.
-    if (expected > in.size() * 255 + 16 || expected > static_cast<size_t>(LZ4_MAX_INPUT_SIZE)) {
+    // An LZ4 block expands at most ~255x; reject impossible size claims up front. The bound
+    // is computed in 64 bits: in.size() * 255 overflows a 32-bit size_t from 16.8 MB on.
+    if (uint64_t(expected) > uint64_t(in.size()) * 255 + 16 || expected > static_cast<size_t>(LZ4_MAX_INPUT_SIZE)) {
         corrupt("lz4", "declares an impossible decompressed size");
     }
+    lz4_check_block(in, expected);
+    // liblz4 accepts only the block 00 for an empty output; SPEC §6 ignores the final
+    // token's match bits, so 01 to 0f are empty too. The check above has accepted it.
+    if (expected == 0) return {};
     std::vector<uint8_t> out(expected);
     int n = LZ4_decompress_safe(reinterpret_cast<const char*>(in.data()), reinterpret_cast<char*>(out.data()),
                                 static_cast<int>(in.size()), static_cast<int>(expected));
@@ -538,8 +616,9 @@ std::vector<uint8_t> snappy_decompress(std::span<const uint8_t> in, size_t limit
     }
     if (exact && n != limit) corrupt("snappy", "decompressed size does not match the header");
     if (!exact && n > limit) fail(ErrorCode::size_limit, "snappy: decompressed data exceeds the size limit");
-    // Snappy expands at most ~32x.
-    if (n > in.size() * 32 + 64) corrupt("snappy", "declares an impossible decompressed size");
+    // Snappy expands at most ~32x. 64-bit math, as for LZ4: on 32-bit targets in.size() * 32
+    // overflows from 134 MB on.
+    if (uint64_t(n) > uint64_t(in.size()) * 32 + 64) corrupt("snappy", "declares an impossible decompressed size");
     std::vector<uint8_t> out(n);
     if (!snappy::RawUncompress(reinterpret_cast<const char*>(in.data()), in.size(),
                                reinterpret_cast<char*>(out.data()))) {

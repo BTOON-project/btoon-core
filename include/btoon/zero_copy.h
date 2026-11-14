@@ -1,56 +1,31 @@
+// SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
+// SPDX-License-Identifier: MIT
 /**
  * @file zero_copy.h
- * @brief Zero-copy APIs for efficient language bindings
- * 
- * Provides memory-mapped and view-based access to BTOON data
- * to minimize copying between language runtimes.
+ * @brief Buffers to decode from and encode into without extra copies.
+ *
+ * MemoryMappedFile maps a file read-only, and SharedMemoryBuffer maps a named shared
+ * memory segment; pass `view().span()` to btoon::decode(). BufferPool recycles output
+ * buffers, and ZeroCopyEncoder encodes into caller-provided memory. A C API exposes the
+ * mappings as opaque views.
+ *
+ * The decoder that returned views into its input (ZeroCopyDecoder) was unfinished and
+ * moved to experimental/ in 0.3.0.
  */
 
 #ifndef BTOON_ZERO_COPY_H
 #define BTOON_ZERO_COPY_H
 
 #include "btoon.h"
-#include <span>
-#include <string_view>
-#include <memory>
 #include <functional>
-#include <unordered_map>
+#include <memory>
 #include <mutex>
-#include "btoon/capi.h"
-
-#ifndef BTOON_API
-#ifdef _WIN32
-#  ifdef BTOON_BUILD_SHARED
-#    define BTOON_API __declspec(dllexport)
-#  else
-#    define BTOON_API
-#  endif
-#else
-#  define BTOON_API __attribute__((visibility("default")))
-#endif
-#endif
+#include <span>
+#include <string>
+#include <vector>
+#include "btoon/capi.h"  // BTOON_API
 
 namespace btoon {
-
-struct ValueView;
-using ArrayView = std::vector<ValueView>;
-using MapView = std::unordered_map<std::string_view, ValueView>;
-
-struct ValueView : std::variant<
-    Nil,
-    Bool,
-    Int,
-    Uint,
-    Float,
-    std::string_view,
-    std::span<const uint8_t>,
-    ArrayView,
-    MapView,
-    Timestamp,
-    Extension
-> {
-    using variant::variant;
-};
 
 /**
  * @brief Memory view for zero-copy access to BTOON data
@@ -148,46 +123,6 @@ private:
 };
 
 /**
- * @brief Zero-copy decoder that provides views into original data
- * 
- * Instead of copying strings and binary data, provides string_view
- * and span references into the original encoded buffer.
- */
-class ZeroCopyDecoder {
-public:
-    struct Options {
-        bool validate_utf8;
-        bool check_bounds;
-        size_t max_depth;
-
-        Options()
-            : validate_utf8(true),
-              check_bounds(true),
-              max_depth(128) {}
-    };
-    
-    explicit ZeroCopyDecoder(const Options& opts = Options())
-        : options_(opts) {}
-    
-    /**
-     * @brief Decode with zero-copy for strings and binary
-     * 
-     * Returns a value tree where strings and binary data are
-     * views into the original buffer rather than copies.
-     */
-    ValueView decode(const MemoryView& view);
-    
-    /**
-     * @brief Decode from raw pointer (caller manages lifetime)
-     */
-    ValueView decode(const uint8_t* data, size_t size);
-    
-private:
-    ValueView decodeValue(const uint8_t* data, size_t size, size_t& pos, size_t depth);
-    Options options_;
-};
-
-/**
  * @brief Memory-mapped file for zero-copy file access
  */
 class MemoryMappedFile {
@@ -215,7 +150,14 @@ public:
     size_t size() const { return size_; }
     
     ~MemoryMappedFile();
-    
+
+    // The object owns the mapping, and the destructor unmaps it: a copy would unmap it
+    // twice and leave the other object dangling. Hold it in the returned unique_ptr.
+    MemoryMappedFile(const MemoryMappedFile&) = delete;
+    MemoryMappedFile& operator=(const MemoryMappedFile&) = delete;
+    MemoryMappedFile(MemoryMappedFile&&) = delete;
+    MemoryMappedFile& operator=(MemoryMappedFile&&) = delete;
+
 private:
     MemoryMappedFile(const uint8_t* data, size_t size, void* handle)
         : data_(data), size_(size), handle_(handle) {}
@@ -264,7 +206,13 @@ public:
     }
     
     ~SharedMemoryBuffer();
-    
+
+    // Owns the mapping and, for the creator, the segment's name: not copyable or movable.
+    SharedMemoryBuffer(const SharedMemoryBuffer&) = delete;
+    SharedMemoryBuffer& operator=(const SharedMemoryBuffer&) = delete;
+    SharedMemoryBuffer(SharedMemoryBuffer&&) = delete;
+    SharedMemoryBuffer& operator=(SharedMemoryBuffer&&) = delete;
+
 private:
     SharedMemoryBuffer(uint8_t* data, size_t size, void* handle)
         : data_(data), size_(size), handle_(handle) {}
@@ -287,8 +235,10 @@ public:
         Buffer(std::vector<uint8_t>&& data, BufferPool* pool)
             : data_(std::move(data)), pool_(pool) {}
         
+        // A buffer goes back to its pool when destroyed, empty or not; a moved-from
+        // buffer has no pool. Buffers must not outlive their pool.
         ~Buffer() {
-            if (pool_ && !data_.empty()) {
+            if (pool_) {
                 pool_->return_buffer(std::move(data_));
             }
         }
@@ -301,7 +251,7 @@ public:
         
         Buffer& operator=(Buffer&& other) noexcept {
             if (this != &other) {
-                if (pool_ && !data_.empty()) {
+                if (pool_) {
                     pool_->return_buffer(std::move(data_));
                 }
                 data_ = std::move(other.data_);
@@ -377,13 +327,16 @@ private:
 };
 
 /**
- * @brief Zero-copy encoder that writes directly to provided buffer
+ * @brief Encodes into memory the caller provides (a buffer, a pool buffer, shared memory).
+ *
+ * The value is encoded canonically (no envelopes) and then copied once into the target.
  */
 class ZeroCopyEncoder {
 public:
     /**
-     * @brief Encode directly into provided buffer
+     * @brief Encode into `buffer`.
      * @return Number of bytes written
+     * @throws BtoonException with ErrorCode::size_limit if the encoding doesn't fit
      */
     size_t encode_into(const Value& value, uint8_t* buffer, size_t buffer_size);
     
@@ -455,15 +408,6 @@ BTOON_API btoon_memory_view_t btoon_shm_create(
  * @brief Close shared memory
  */
 BTOON_API void btoon_shm_close(btoon_memory_view_t view);
-
-/**
- * @brief Zero-copy decode
- */
-BTOON_API int btoon_decode_zero_copy(
-    const uint8_t* data,
-    size_t size,
-    btoon_value_t* out_value
-);
 
 } // extern "C"
 

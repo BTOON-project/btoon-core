@@ -6,13 +6,13 @@ param(
     [switch]$SkipTests,
     [string]$Architecture = "x64",
     [string]$BuildDir = "build-release",
-    [string]$Generator = "Visual Studio 16 2019"
+    [string]$Generator = "Visual Studio 17 2022"
 )
 
 $ErrorActionPreference = "Stop"
 
-# Script configuration
-$RootDir = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+# Script configuration (the repository root is the parent of scripts\)
+$RootDir = Split-Path -Parent $PSScriptRoot
 $BuildPath = Join-Path $RootDir $BuildDir
 $Version = (Select-String -Path (Join-Path $PSScriptRoot "..\include\btoon\btoon.h") -Pattern '#define BTOON_VERSION_STRING "(.*)"').Matches[0].Groups[1].Value
 
@@ -36,7 +36,7 @@ if (!(Test-Path $BuildPath)) {
     New-Item -ItemType Directory -Path $BuildPath | Out-Null
 }
 
-Set-Location $BuildPath
+Push-Location $BuildPath
 
 # Configure CMake
 Write-Host "Configuring CMake..." -ForegroundColor Green
@@ -44,6 +44,8 @@ $CMakeArgs = @(
     "-G", $Generator,
     "-A", $Architecture,
     "-DCMAKE_BUILD_TYPE=Release",
+    # Static MSVC runtime: the tools then need no VC++ redistributable (as in the release workflow).
+    "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
     "-DBUILD_TESTS=ON",
     "-DBUILD_TOOLS=ON",
     ".."
@@ -105,10 +107,9 @@ foreach ($Binary in $Binaries) {
 }
 
 # Copy libraries
+# The library is static on Windows.
 $Libraries = @(
-    "Release\btoon.lib",
-    "Release\btoon_core.lib",
-    "Release\btoon.dll"
+    "Release\btoon_core.lib"
 )
 
 foreach ($Library in $Libraries) {

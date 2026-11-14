@@ -167,6 +167,11 @@ Ambiguities are resolved the same way everywhere:
 - **PHP zstd:** ext-zstd's `zstd_uncompress()` pre-allocates the frame's declared size,
   has no output limit, and ignores truncation and trailing bytes. Validate the frame
   header yourself and decompress incrementally (ext-zstd 0.15 or later).
+- **LZ4 on liblz4:** `LZ4_decompress_safe` skips the end-of-block checks, and accepts a
+  match offset of 0, for sequences it decodes on its fast path (while at least 32 bytes of
+  output remain). SPEC §6 rejects those blocks, so check the block's structure before
+  calling it, as core does in `lz4_check_block()` (src/compression.cpp). Libraries that
+  wrap liblz4 (python-lz4, ext-lz4, lz4-napi) need the same check.
 - **PHP LZ4 and Brotli:** ext-lz4 before 0.8 only writes size-prefixed blocks, so use
   the 0.8 `lz4_*_raw()` functions. ext-brotli can't bound its output or detect trailing
   bytes, so the PHP library reports Brotli as unsupported.

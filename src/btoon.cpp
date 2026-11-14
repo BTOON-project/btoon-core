@@ -194,6 +194,33 @@ Timestamp Timestamp::from_microseconds(int64_t micros) {
     return Timestamp(sec, static_cast<uint32_t>(rem * 1000));
 }
 
+namespace {
+// seconds * scale + nanoseconds / (1e9 / scale), rounded down, or invalid_argument when the
+// result doesn't fit in int64. Computed without overflow: a negative instant is
+// (seconds + 1) * scale + (sub - scale), so INT64_MIN itself stays reachable.
+int64_t scaled_instant(const Timestamp& ts, int64_t scale, const char* unit) {
+    if (ts.nanoseconds >= kNanosPerSecond) fail(ErrorCode::invalid_argument, "timestamp nanoseconds must be < 1e9");
+    const int64_t sub = static_cast<int64_t>(ts.nanoseconds / static_cast<uint32_t>(1000000000 / scale));
+    auto out_of_range = [&] {
+        fail(ErrorCode::invalid_argument, std::string("timestamp doesn't fit in int64 ") + unit);
+    };
+    if (ts.seconds >= 0) {
+        if (ts.seconds > (INT64_MAX - sub) / scale) out_of_range();
+        return ts.seconds * scale + sub;
+    }
+    const int64_t whole = ts.seconds + 1;  // <= 0
+    if (whole < INT64_MIN / scale) out_of_range();
+    const int64_t base = whole * scale;
+    const int64_t rest = sub - scale;  // -scale .. -1
+    if (base < INT64_MIN - rest) out_of_range();
+    return base + rest;
+}
+}  // namespace
+
+int64_t Timestamp::to_microseconds() const { return scaled_instant(*this, 1000000, "microseconds"); }
+
+int64_t Timestamp::to_milliseconds() const { return scaled_instant(*this, 1000, "milliseconds"); }
+
 Timestamp Timestamp::from_milliseconds(int64_t millis) {
     int64_t sec = millis / 1000;
     int64_t rem = millis % 1000;

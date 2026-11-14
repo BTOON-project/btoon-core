@@ -1,0 +1,22 @@
+{
+  "name": "sensor-reading",
+  "version": "1.0.0",
+  "description": "A \"reading\"\nfrom a sensor",
+  "fields": [
+    {"name": "count", "type": "uint"},
+    {"name": "value", "type": "number"},
+    {"name": "note", "type": "string", "required": false, "description": "free\ntext"},
+    {"name": "id", "type": "int"},
+    {"name": "first-name", "type": "string", "required": false},
+    {"name": "class", "type": "bool"},
+    {"name": "2fa", "type": "bool", "required": false},
+    {"name": "m", "type": "map"},
+    {"name": "self", "type": "float", "required": false},
+    {"name": "at", "type": "timestamp", "required": false},
+    {"name": "big", "type": "bigint", "required": false},
+    {"name": "emb", "type": "vector_float", "required": false},
+    {"name": "blob", "type": "binary", "required": false},
+    {"name": "fail", "type": "any", "required": false},
+    {"name": "quote\"key", "type": "string", "required": false}
+  ]
+}

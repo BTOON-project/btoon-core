@@ -61,6 +61,10 @@ struct Reader {
 
 Value read_value(Reader& r, size_t depth);
 
+// The Value alternative a tabular row decodes to (for Security::setAllowedTypes).
+constexpr size_t kMapIndex = 8;
+static_assert(std::is_same_v<std::variant_alternative_t<kMapIndex, Value::variant>, Map>);
+
 inline Value uint_value(uint64_t v) {
     return v <= static_cast<uint64_t>(INT64_MAX) ? Value(Int(static_cast<int64_t>(v))) : Value(Uint(v));
 }
@@ -206,6 +210,9 @@ Value read_tabular(Reader& t, size_t depth) {
     }
     // The N row maps count once the header is checked; each cell counts as it starts.
     count_values(t, num_rows);
+    // Each row is a map, so type restrictions (Security::setAllowedTypes) apply to the
+    // rows exactly as they would to the same array of maps written without tabular.
+    const bool rows_allowed = t.types == nullptr || t.types->isTypeAllowed(kMapIndex);
     // Rows are created while column 0 is read, one per decoded cell, so every row is
     // backed by input already consumed. Creating num_rows maps up front let nested
     // tabulars each allocate against the same bytes (2.6 GiB from a 1 MB input).
@@ -221,7 +228,10 @@ Value read_tabular(Reader& t, size_t depth) {
         try {
             for (uint32_t r = 0; r < num_rows; ++r) {
                 Value v = read_value(col, depth + 2);
-                if (c == 0) rows.emplace_back(Map{});
+                if (c == 0) {
+                    if (!rows_allowed) fail(ErrorCode::invalid_argument, "type not allowed: map");
+                    rows.emplace_back(Map{});
+                }
                 auto& row = std::get<Map>(rows[r]);
                 row.emplace_hint(row.end(), names[c], std::move(v));
             }

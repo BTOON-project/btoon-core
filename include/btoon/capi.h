@@ -6,15 +6,40 @@
 //  ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝
 //
 //  BTOON Core
-//  https://btoon.net //  https://btoon.net //  https://btoon.net //  https://btoon.net //  https://btoon.net & https://github.com/BTOON-project/btoon-coren// https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core https://github.com/BTOON-project/btoon-core
+//  https://btoon.net & https://github.com/BTOON-project/btoon-core
 //
 // SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
 // SPDX-License-Identifier: MIT
 
-
 /**
  * @file capi.h
- * @brief C API for BTOON - Stable ABI for language bindings
+ * @brief C API for BTOON.
+ *
+ * Errors: no C++ exception crosses this API. Functions that create values return NULL
+ * when memory runs out or an argument is invalid. btoon_encode() and btoon_decode()
+ * report a btoon_status_t code (the docs/SPEC.md §7 error codes) and a message.
+ *
+ * Ownership:
+ * - Every btoon_value_t returned by a btoon_value_create_*() function or by
+ *   btoon_decode() belongs to the caller, who frees it with btoon_value_destroy(). That
+ *   frees the whole tree: its strings, buffers, elements and entries.
+ * - The create functions copy what they're given. btoon_value_create_array() and
+ *   btoon_value_create_map() deep-copy their elements, so the caller still owns, and
+ *   must still destroy, the values it passed in.
+ * - Strings in values are NUL-terminated copies; `len` doesn't count the NUL. Other
+ *   buffers (binary, bigint, extension, vectors) have `ptr == NULL` exactly when
+ *   `len == 0`.
+ * - btoon_encode() only reads its value. Any well-formed tree works, including one built
+ *   by hand, but don't free the parts of a value that the library created, or replace
+ *   them, except through btoon_value_destroy().
+ * - btoon_result_t's `data` and `error` are freed together by btoon_free_result(). An
+ *   error message from btoon_decode() is freed with btoon_free_error().
+ *
+ * Options: a zero-initialized options struct gives the defaults, and NULL options mean
+ * the same.
+ *
+ * Since 0.3.0. The ABI changed in 0.3.0 (timestamp fields, options, status codes); code
+ * written against 0.2.x must be updated and recompiled.
  */
 #ifndef BTOON_CAPI_H
 #define BTOON_CAPI_H
@@ -27,17 +52,42 @@
 extern "C" {
 #endif
 
-#ifdef _WIN32
-    #ifdef BTOON_BUILD_SHARED
-        #define BTOON_API __declspec(dllexport)
-    #else
-        #define BTOON_API
-    #endif
-#else
+/* The library is static on Windows (see CMakeLists.txt), so nothing is imported from a DLL. */
+#if !defined(_WIN32) && defined(__GNUC__)
     #define BTOON_API __attribute__((visibility("default")))
+#else
+    #define BTOON_API
 #endif
 
-// --- Value Representation ---
+/* --- Status codes ----------------------------------------------------------------- */
+
+/** BTOON_OK, or one of the error codes of docs/SPEC.md §7. */
+typedef enum {
+    BTOON_OK = 0,
+    BTOON_ERROR_GENERIC = 1,
+    BTOON_ERROR_TRUNCATED = 2,
+    BTOON_ERROR_INVALID_MARKER = 3,
+    BTOON_ERROR_TRAILING_DATA = 4,
+    BTOON_ERROR_INVALID_UTF8 = 5,
+    BTOON_ERROR_NON_STRING_KEY = 6,
+    BTOON_ERROR_DUPLICATE_KEY = 7,
+    BTOON_ERROR_MAX_DEPTH = 8,
+    BTOON_ERROR_INVALID_EXTENSION = 9,
+    BTOON_ERROR_INVALID_TABULAR = 10,
+    BTOON_ERROR_INVALID_ENVELOPE = 11,
+    BTOON_ERROR_SIZE_LIMIT = 12,
+    BTOON_ERROR_UNSUPPORTED_COMPRESSION = 13,
+    BTOON_ERROR_AUTHENTICATION_FAILED = 14,
+    /** A bad argument or option, such as a NULL pointer with a nonzero length, an empty
+        HMAC key, or a value the encoder can't write. */
+    BTOON_ERROR_INVALID_ARGUMENT = 15,
+    BTOON_ERROR_OUT_OF_MEMORY = 16
+} btoon_status_t;
+
+/** The spec name of a status: "ok", "truncated", "max_depth", …, "out_of_memory". */
+BTOON_API const char* btoon_status_name(btoon_status_t status);
+
+/* --- Values ------------------------------------------------------------------------ */
 
 typedef enum {
     BTOON_TYPE_NIL,
@@ -87,8 +137,12 @@ typedef struct {
     size_t len;
 } btoon_extension_t;
 
+/** An instant in UTC (extension -1, docs/SPEC.md §5.1). */
 typedef struct {
-    int64_t seconds;
+    int64_t seconds;          /**< Seconds since the Unix epoch, UTC. */
+    uint32_t nanoseconds;     /**< 0 … 999999999. */
+    int16_t timezone_offset;  /**< Minutes east of UTC, -1080 … 1080, if has_timezone. */
+    bool has_timezone;        /**< Written in the 14-byte form with the offset. */
 } btoon_timestamp_t;
 
 typedef struct {
@@ -99,6 +153,7 @@ typedef struct {
     int64_t nanoseconds;
 } btoon_datetime_t;
 
+/** Two's complement, big-endian. */
 typedef struct {
     const uint8_t* ptr;
     size_t len;
@@ -106,12 +161,12 @@ typedef struct {
 
 typedef struct {
     const float* ptr;
-    size_t len;
+    size_t len;  /**< Number of floats. */
 } btoon_vector_float_t;
 
 typedef struct {
     const double* ptr;
-    size_t len;
+    size_t len;  /**< Number of doubles. */
 } btoon_vector_double_t;
 
 struct btoon_value {
@@ -135,23 +190,41 @@ struct btoon_value {
     } as;
 };
 
-// --- Value Management ---
+/* --- Creating and destroying values ---------------------------------------------------
+ * Each returns a new value that the caller frees with btoon_value_destroy(), or NULL if
+ * memory runs out or a pointer is NULL while its length isn't 0. Values aren't checked
+ * here: btoon_encode() rejects, for example, nanoseconds of 10^9 or more, or an
+ * extension id that BTOON defines (-1 … -6, -10). */
 
-BTOON_API btoon_value_t* btoon_value_create_nil();
+BTOON_API btoon_value_t* btoon_value_create_nil(void);
 BTOON_API btoon_value_t* btoon_value_create_bool(bool value);
 BTOON_API btoon_value_t* btoon_value_create_int(int64_t value);
 BTOON_API btoon_value_t* btoon_value_create_uint(uint64_t value);
 BTOON_API btoon_value_t* btoon_value_create_float(double value);
+/** Copies `len` bytes of UTF-8 (not checked until encoding). */
 BTOON_API btoon_value_t* btoon_value_create_string(const char* str, size_t len);
 BTOON_API btoon_value_t* btoon_value_create_binary(const uint8_t* data, size_t len);
+/** Deep-copies the elements; NULL elements are an error. */
 BTOON_API btoon_value_t* btoon_value_create_array(const btoon_value_t** elements, size_t len);
+/** Deep-copies the entries. NULL values and duplicate keys are errors. */
 BTOON_API btoon_value_t* btoon_value_create_map(const btoon_string_t* keys, const btoon_value_t** values, size_t len);
-BTOON_API btoon_value_t* btoon_value_create_timestamp(int64_t seconds);
+/** A UTC instant without an offset. */
+BTOON_API btoon_value_t* btoon_value_create_timestamp(int64_t seconds, uint32_t nanoseconds);
+/** A UTC instant that keeps a timezone offset in minutes (the 14-byte form). */
+BTOON_API btoon_value_t* btoon_value_create_timestamp_with_offset(int64_t seconds, uint32_t nanoseconds,
+                                                                  int16_t offset_minutes);
+BTOON_API btoon_value_t* btoon_value_create_date(int64_t milliseconds);
+BTOON_API btoon_value_t* btoon_value_create_datetime(int64_t nanoseconds);
+/** Two's complement, big-endian, at least one byte. Encoded as an integer if it fits. */
+BTOON_API btoon_value_t* btoon_value_create_bigint(const uint8_t* bytes, size_t len);
+BTOON_API btoon_value_t* btoon_value_create_vector_float(const float* data, size_t len);
+BTOON_API btoon_value_t* btoon_value_create_vector_double(const double* data, size_t len);
 BTOON_API btoon_value_t* btoon_value_create_extension(int8_t type, const uint8_t* data, size_t len);
 
+/** Frees a value and everything it holds. NULL is ignored. */
 BTOON_API void btoon_value_destroy(btoon_value_t* value);
 
-// --- Encoding and Decoding ---
+/* --- Encoding and decoding ------------------------------------------------------------ */
 
 typedef enum {
     BTOON_COMPRESSION_ZLIB = 0,
@@ -161,38 +234,67 @@ typedef enum {
     BTOON_COMPRESSION_SNAPPY = 4
 } btoon_compression_t;
 
+/** Zero-initialized (or NULL) means the defaults. */
 typedef struct {
-    bool compress;
-    btoon_compression_t compression_algorithm;
-    int compression_level;
-    bool auto_tabular;
+    bool compress;                              /**< Add a compression envelope (§6) when it saves ≥ 5%. */
+    btoon_compression_t compression_algorithm;  /**< Used when compress is set; zlib by default. */
+    int compression_level;                      /**< 0 means the algorithm's default. */
+    bool no_tabular;                            /**< Never use the columnar encoding (§5.6). */
+    const uint8_t* hmac_key;                    /**< Sign with HMAC-SHA256 (§8); NULL means don't sign. */
+    size_t hmac_key_len;                        /**< Must not be 0 when hmac_key is set. */
 } btoon_encode_options_t;
 
+/** Zero-initialized (or NULL) means the defaults. */
 typedef struct {
-    bool decompress;
-    bool strict;
+    bool no_decompress;            /**< Reject compressed input instead of decompressing it. */
+    bool non_strict;               /**< Non-strict mode (§7): allows trailing data, duplicate keys and
+                                        invalid UTF-8 in string values. */
+    size_t max_depth;              /**< 0 means 128. At most 1000. */
+    size_t max_decompressed_size;  /**< 0 means 64 MiB. */
+    size_t max_values;             /**< 0 means 2^20 (§7.1). */
+    const uint8_t* hmac_key;       /**< Require and verify a signed envelope (§8); NULL means no key. */
+    size_t hmac_key_len;           /**< Must not be 0 when hmac_key is set. */
 } btoon_decode_options_t;
 
 typedef struct {
-    uint8_t* data;
+    uint8_t* data;          /**< The encoded bytes, or NULL on failure. */
     size_t size;
-    char* error;
+    char* error;            /**< NULL on success, else a message. */
+    btoon_status_t status;  /**< BTOON_OK on success. */
 } btoon_result_t;
 
+/**
+ * Encodes `value` canonically. Free the result with btoon_free_result(). Values may nest
+ * at most 128 levels, the default max_depth (SPEC §7); deeper or cyclic trees fail with
+ * BTOON_ERROR_MAX_DEPTH.
+ */
 BTOON_API btoon_result_t btoon_encode(const btoon_value_t* value, const btoon_encode_options_t* options);
-BTOON_API btoon_value_t* btoon_decode(const uint8_t* data, size_t size, const btoon_decode_options_t* options, char** error);
 
+/**
+ * Decodes a complete document. Returns a value the caller frees with
+ * btoon_value_destroy(), or NULL on failure. Then *status (if `status` isn't NULL) holds
+ * the error code, and *error (if `error` isn't NULL) a message to free with
+ * btoon_free_error(); on success they're BTOON_OK and NULL. `data` may be NULL only if
+ * `size` is 0.
+ */
+BTOON_API btoon_value_t* btoon_decode(const uint8_t* data, size_t size, const btoon_decode_options_t* options,
+                                      btoon_status_t* status, char** error);
+
+/** Frees a result's data and error message. */
 BTOON_API void btoon_free_result(btoon_result_t result);
 
-/** Frees an error string returned through btoon_decode's `error` out-parameter. */
+/** Frees an error message returned by btoon_decode(). NULL is ignored. */
 BTOON_API void btoon_free_error(char* error);
 
-// --- Version Info ---
+/* --- Version ------------------------------------------------------------------------ */
+
+/** Library version, e.g. "0.3.0". */
 BTOON_API const char* btoon_version(void);
+/** Version of docs/SPEC.md implemented, e.g. "0.3". */
+BTOON_API const char* btoon_spec_version(void);
 
 #ifdef __cplusplus
 }
 #endif
 
 #endif // BTOON_CAPI_H
-

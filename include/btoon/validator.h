@@ -1,24 +1,21 @@
+// SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
+// SPDX-License-Identifier: MIT
 /**
  * @file validator.h
- * @brief Strict input validation for BTOON data
- * 
- * Provides comprehensive validation to ensure data integrity
- * and protect against malformed or malicious inputs.
+ * @brief Validation of BTOON data against size and type rules.
+ *
+ * Validator decodes encoded input with the hardened decoder (which enforces the
+ * docs/SPEC.md §7 limits) and then checks the decoded value against ValidationOptions.
+ * Validating encoded input allocates the decoded value, like btoon::decode().
  */
 
 #ifndef BTOON_VALIDATOR_H
 #define BTOON_VALIDATOR_H
 
-// Prevent Windows from defining min/max macros that conflict with std::numeric_limits
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#endif
-
 #include "btoon.h"
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <limits>
 #include <optional>
@@ -50,15 +47,15 @@ struct ValidationOptions {
     bool allow_duplicate_map_keys = false; // Allow duplicate keys in maps
     
     // Security options
-    bool check_circular_references = true; // Check for circular refs (if using references)
-    bool validate_extension_types = true;  // Validate known extension types
-    bool limit_recursion = true;          // Limit recursion to prevent stack overflow
+    bool check_circular_references = true; // No effect: a Value can't hold a cycle
+    bool validate_extension_types = true;  // Check extensions with TypeValidator::validateExtension (accepts every id)
+    bool limit_recursion = true;          // No effect: decoding and validation are always depth-limited
     // The key for signed documents (docs/SPEC.md §8). Without it, a signed document fails
     // validation with authentication_failed. An empty key is an error, not "no key".
     std::optional<std::string> hmac_key;
     
     // Performance options
-    bool fast_mode = false;               // Skip some expensive checks
+    bool fast_mode = false;               // No effect since 0.3.0 (it skipped the heuristic SecurityValidator scan)
     bool collect_stats = false;           // Collect validation statistics
 };
 
@@ -129,16 +126,17 @@ public:
     ValidationResult validate(const Value& value) const;
     
     /**
-     * @brief Quick validation check (less thorough but faster)
-     * @param data Raw BTOON data to validate
-     * @return True if data appears valid
+     * @brief Whether the data decodes, with the same decoder settings as validate().
+     *
+     * Skips validate()'s checks on the decoded value (lengths, sizes, floats, timestamps).
+     * Before 0.3.0 it only looked at the first byte, so truncated input passed.
      */
     bool quickCheck(std::span<const uint8_t> data) const;
     
     /**
-     * @brief Sanitize untrusted input
-     * @param data Raw data to sanitize
-     * @return Sanitized data (may be modified or empty if invalid)
+     * @brief Decodes, validates and re-encodes untrusted input canonically.
+     * @return The canonical encoding (bare, without envelopes), or empty if the data
+     *         doesn't decode or doesn't validate.
      */
     std::vector<uint8_t> sanitize(std::span<const uint8_t> data) const;
     
@@ -198,7 +196,8 @@ public:
     /**
      * @brief Sanitize string to valid UTF-8
      * @param str String to sanitize
-     * @return Sanitized string with invalid sequences replaced
+     * @return Valid UTF-8: each maximal invalid subsequence (Unicode §3.9) is replaced
+     *         with U+FFFD, and everything valid is kept
      */
     static std::string sanitize(std::string_view str);
     
@@ -215,14 +214,16 @@ public:
     /**
      * @brief Validate integer range
      */
-    static bool validateInt(int64_t value, int64_t min = std::numeric_limits<int64_t>::min(),
-                           int64_t max = std::numeric_limits<int64_t>::max());
+    // (std::numeric_limits<T>::min)() and (…max)(): the parentheses keep <windows.h>'s min
+    // and max macros from expanding here when NOMINMAX isn't defined.
+    static bool validateInt(int64_t value, int64_t min = (std::numeric_limits<int64_t>::min)(),
+                           int64_t max = (std::numeric_limits<int64_t>::max)());
     
     /**
      * @brief Validate unsigned integer range
      */
     static bool validateUint(uint64_t value, uint64_t min = 0,
-                            uint64_t max = std::numeric_limits<uint64_t>::max());
+                            uint64_t max = (std::numeric_limits<uint64_t>::max)());
     
     /**
      * @brief Validate float value
@@ -242,34 +243,6 @@ public:
 };
 
 /**
- * @brief Security-focused validator
- */
-class SecurityValidator {
-public:
-    /**
-     * @brief Check for potential security issues
-     * @param data Raw BTOON data
-     * @return List of security concerns found
-     */
-    static std::vector<std::string> checkSecurity(std::span<const uint8_t> data);
-    
-    /**
-     * @brief Check for zip bomb patterns
-     */
-    static bool checkForZipBomb(std::span<const uint8_t> data);
-    
-    /**
-     * @brief Check for excessive nesting (stack overflow risk)
-     */
-    static bool checkNestingDepth(std::span<const uint8_t> data, size_t maxDepth = 128);
-    
-    /**
-     * @brief Check for unreasonable size claims
-     */
-    static bool checkSizeClaims(std::span<const uint8_t> data);
-};
-
-/**
  * Convenience functions
  */
 
@@ -282,7 +255,7 @@ inline ValidationResult validate(std::span<const uint8_t> data) {
 }
 
 /**
- * @brief Quick validation check
+ * @brief Whether the data decodes (Validator::quickCheck with default options)
  */
 inline bool isValid(std::span<const uint8_t> data) {
     Validator validator;

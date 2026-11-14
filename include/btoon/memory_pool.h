@@ -24,13 +24,14 @@
 namespace btoon {
 
 /**
- * @brief Memory pool allocator for efficient memory management.
- * 
- * Features:
- * - SIMD-aligned allocations (32-byte alignment for AVX2)
- * - Block reuse through free list
- * - Configurable growth strategy
- * - Thread-safe option (disabled by default)
+ * @brief Arena allocator with 32-byte aligned allocations and a free list.
+ *
+ * - Every pointer it returns is aligned to SIMD_ALIGNMENT (32 bytes, for AVX2).
+ * - Sizes are rounded up to that alignment; a size so large that rounding would
+ *   overflow throws std::bad_alloc.
+ * - Freed chunks are reused through a free list.
+ * - Not thread-safe. The library doesn't use it: Encoder and Decoder accept a pool only
+ *   for source compatibility and ignore it.
  */
 class MemoryPool {
 public:
@@ -49,14 +50,16 @@ public:
     /**
      * @brief Allocate aligned memory from the pool
      * @param size Number of bytes to allocate
-     * @return Pointer to allocated memory (aligned to SIMD_ALIGNMENT)
+     * @return Pointer to allocated memory (aligned to SIMD_ALIGNMENT), distinct from
+     *         every other live allocation, also for size 0
+     * @throws std::bad_alloc if the memory can't be allocated
      */
     void* allocate(size_t size);
     
     /**
      * @brief Return memory to the pool for reuse
-     * @param ptr Pointer to memory to deallocate
-     * @param size Size of the allocation
+     * @param ptr Pointer returned by allocate()
+     * @param size The size passed to allocate()
      */
     void deallocate(void* ptr, size_t size);
     
