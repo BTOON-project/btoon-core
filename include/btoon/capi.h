@@ -263,7 +263,11 @@ typedef struct {
     btoon_status_t status;  /**< BTOON_OK on success. */
 } btoon_result_t;
 
-/** Encodes `value` canonically. Free the result with btoon_free_result(). */
+/**
+ * Encodes `value` canonically. Free the result with btoon_free_result(). Values may nest
+ * at most 128 levels, the default max_depth (SPEC §7); deeper or cyclic trees fail with
+ * BTOON_ERROR_MAX_DEPTH.
+ */
 BTOON_API btoon_result_t btoon_encode(const btoon_value_t* value, const btoon_encode_options_t* options);
 
 /**

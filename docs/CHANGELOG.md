@@ -72,7 +72,7 @@ or **(removed)** can affect existing code.
   `_vector_float` and `_vector_double` are new, as is `btoon_spec_version()`.
 - Input is checked instead of trusted: a `NULL` pointer with a nonzero length, an
   unknown type tag, a duplicate map key or a `NULL` element is `invalid_argument`, and a
-  hand-built tree deeper than 1000 levels (or a cycle) is `max_depth`.
+  hand-built tree deeper than 128 levels, the encoder's limit (or a cycle), is `max_depth`.
 - Empty buffers decode to `ptr == NULL, len == 0`. Before, they were copied with `memcpy`
   from a null pointer (undefined behavior).
 - capi.h documents ownership: who frees values, results and messages, and with what.

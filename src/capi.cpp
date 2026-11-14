@@ -196,11 +196,18 @@ std::span<const T> buffer(const T* ptr, size_t len, const char* what) {
     return {ptr, len};
 }
 
+// The C API encodes with the default max_depth (128), so a value can't usefully nest
+// deeper. Hand-built trees can be arbitrarily deep, or cyclic: converting them stops one
+// level past that limit, before the stack does (an MSVC debug build's 1 MB main-thread
+// stack overflowed at 1000 levels), and leaves the exact error to the encoder.
+constexpr size_t kCValueDepthLimit = btoon::kDefaultMaxDepth + 1;
+
 btoon::Value to_cpp_value(const btoon_value_t* c, size_t depth) {
     using namespace btoon;
     if (!c) fail(ErrorCode::invalid_argument, "value is NULL");
-    // Hand-built trees can be arbitrarily deep, or cyclic: stop before the stack does.
-    if (depth > kMaxDepthLimit) fail(ErrorCode::max_depth, "value nests more than 1000 levels");
+    if (depth > kCValueDepthLimit) {
+        fail(ErrorCode::max_depth, "value nests more than " + std::to_string(kDefaultMaxDepth) + " levels");
+    }
     const int type = raw_enum(c->type);
     switch (type) {
         case BTOON_TYPE_NIL: return Value(nullptr);
