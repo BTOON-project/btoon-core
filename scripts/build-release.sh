@@ -50,9 +50,7 @@ case "$OS" in
         fi
         ;;
     Linux)
-        # Linux
-        CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CXX_FLAGS='-march=native'"
-        
+        # Linux. No -march=native: the binaries must run on other machines too.
         # Enable LTO for smaller binaries
         CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON"
         ;;

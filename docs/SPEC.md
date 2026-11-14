@@ -386,11 +386,17 @@ offset size field
   as a second zlib stream or padding, are `invalid_envelope`.
 - A zlib stream MUST NOT use a preset dictionary. The FDICT flag (bit 5 of the FLG byte)
   set is `invalid_envelope`, whatever the DICTID.
-- An LZ4 block MUST meet the block format's end-of-block conditions: the last sequence
-  holds only literals, the last 5 bytes of output are literals, and the last match
-  starts at least 12 bytes before the end of the output. A block that breaks them, for
-  example one that ends with a match, is `invalid_envelope`. The match-length bits of
-  the final token are ignored.
+- An LZ4 block MUST be valid under the LZ4 block format, end-of-block conditions
+  included:
+  - the last sequence holds only literals;
+  - the last 5 bytes of output are literals (all of it, when the output is shorter);
+  - the last match starts at least 12 bytes before the end of the output;
+  - no match offset is 0 or reaches back before the start of the output.
+
+  A block that breaks any of these is `invalid_envelope`. The match-length bits of the
+  final token are ignored. liblz4's decoder accepts offset 0 (writing zeros) and skips the
+  end-of-block checks on its fast path, so a decoder built on it needs its own check of
+  the block structure.
 - MUST NOT fall back to interpreting envelope bytes as a bare document.
 - SHOULD bound decoder memory for codecs with large windows: reject Zstd frames whose
   window exceeds max(8 MiB, min(`uncompressed_size`, 128 MiB)) with `invalid_envelope`.
@@ -608,8 +614,9 @@ verification off. The key is caller-supplied and SHOULD be at least 32 random by
 The wire format is unchanged, and so are the limits. One edge case and one conformance
 rule are new.
 
-- LZ4 blocks MUST meet the block format's end-of-block conditions (§6). liblz4 already
-  enforces them; some other decoders accepted a block that ends with a match.
+- LZ4 blocks MUST meet the block format's end-of-block conditions, and offsets must stay
+  inside the output (§6). Decoders disagreed here: btoon-go accepted some violating
+  blocks, and liblz4 skips the end-of-block checks for longer outputs.
 - Every implementation MUST be able to write timestamp, date and datetime values, with a
   decoding mode that preserves all three (§10). The JavaScript and Python libraries
   gained typed date and datetime values for this.

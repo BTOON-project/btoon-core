@@ -40,6 +40,21 @@ jobs:
           cmake -S . -B build "${args[@]}"
       - name: Build
         run: cmake --build build --config Release --parallel
+      # The Windows tools link the static MSVC runtime (CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+      # above), so they run without the VC++ redistributable. Fail if one imports it anyway.
+      - name: Check that the Windows tools need no VC++ redistributable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem -Path "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe |
+            Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
+          if (-not $dumpbin) { throw "dumpbin.exe not found under $vs" }
+          foreach ($tool in 'btoon', 'btoon-convert', 'btoon-schema') {
+            $deps = & $dumpbin.FullName /dependents "build\Release\$tool.exe" | Out-String
+            Write-Host $deps
+            if ($deps -match '(?i)(msvcp|vcruntime|ucrtbased)\d*\.dll') { throw "$tool.exe imports $($Matches[0])" }
+          }
       - name: Package
         shell: bash
         run: |

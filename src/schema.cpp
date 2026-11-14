@@ -171,6 +171,41 @@ std::optional<int> compare_numbers(const Value& a, const Value& b) {
     return 0;
 }
 
+// Constraints that accept everything either `a` or `b` accepts: the smaller minimum, the
+// larger maximum and the union of enums. A key only one side has, or a value that differs
+// in any other way, is dropped. No constraints on either side means none.
+std::optional<Value> merge_constraints(const std::optional<Value>& a, const std::optional<Value>& b) {
+    if (!a || !b) return std::nullopt;
+    const Map* ma = std::get_if<Map>(&*a);
+    const Map* mb = std::get_if<Map>(&*b);
+    if (!ma || !mb) return *a == *b ? a : std::nullopt;
+    Map out;
+    for (const auto& [key, va] : *ma) {
+        auto it = mb->find(key);
+        if (it == mb->end()) continue;
+        const Value& vb = it->second;
+        const bool lower = key == "min" || key == "minLength" || key == "minItems";
+        const bool upper = key == "max" || key == "maxLength" || key == "maxItems";
+        if (lower || upper) {
+            const auto c = compare_numbers(va, vb);
+            if (c) out[key] = (*c <= 0) == lower ? va : vb;
+        } else if (key == "enum") {
+            const Array* ea = std::get_if<Array>(&va);
+            const Array* eb = std::get_if<Array>(&vb);
+            if (!ea || !eb) continue;
+            Array all = *ea;
+            for (const auto& v : *eb) {
+                if (std::find(all.begin(), all.end(), v) == all.end()) all.push_back(v);
+            }
+            out[key] = std::move(all);
+        } else if (va == vb) {
+            out[key] = va;
+        }
+    }
+    if (out.empty()) return std::nullopt;
+    return Value(std::move(out));
+}
+
 // Rejects constraints that can't be evaluated, so a broken schema fails when it is
 // built, not on every validate().
 void check_constraints(const SchemaField& field) {
@@ -307,42 +342,74 @@ public:
         return fields_;
     }
     
-    // Evolution and compatibility
-    bool isCompatibleWith(const Schema& other) const {
-        // Check based on evolution strategy
+    // Evolution and compatibility (the rules are documented on EvolutionStrategy).
+    bool isCompatibleWith(const Schema& newer) const {
+        const std::vector<SchemaField> next = newer.getFields();
+        auto find = [](const std::vector<SchemaField>& fields, const std::string& name) -> const SchemaField* {
+            for (const auto& f : fields) {
+                if (f.name == name) return &f;
+            }
+            return nullptr;
+        };
+        auto same = [](const SchemaField& a, const SchemaField& b) {
+            return a.type == b.type && a.required == b.required && a.constraints == b.constraints;
+        };
         switch (evolution_strategy_) {
             case EvolutionStrategy::STRICT:
-                return false;  // No changes allowed
-                
+                if (next.size() != fields_.size()) return false;
+                for (const auto& field : fields_) {
+                    const SchemaField* n = find(next, field.name);
+                    if (!n || !same(field, *n)) return false;
+                }
+                return true;
+
             case EvolutionStrategy::ADDITIVE:
-                // Only new optional fields allowed
                 for (const auto& field : fields_) {
-                    if (field.required) {
-                        auto other_field = other.getField(field.name);
-                        if (!other_field || other_field->type != field.type) {
-                            return false;
-                        }
-                    }
+                    const SchemaField* n = find(next, field.name);
+                    if (!n || !same(field, *n)) return false;
+                }
+                for (const auto& n : next) {
+                    if (!find(fields_, n.name) && n.required) return false;
                 }
                 return true;
-                
-            case EvolutionStrategy::BACKWARD_COMPATIBLE:
-                // Can read old data
-                for (const auto& field : fields_) {
-                    if (field.required && !field.default_value.has_value()) {
-                        auto other_field = other.getField(field.name);
-                        if (!other_field) {
-                            return false;
-                        }
+
+            case EvolutionStrategy::BACKWARD_COMPATIBLE: {
+                // A STRICT newer schema rejects every field it doesn't list, so it must keep
+                // all of the old fields.
+                if (newer.getEvolutionStrategy() == EvolutionStrategy::STRICT) {
+                    for (const auto& field : fields_) {
+                        if (!find(next, field.name)) return false;
                     }
                 }
+                for (const auto& n : next) {
+                    const SchemaField* old = find(fields_, n.name);
+                    if (!old) {
+                        if (n.required) return false;  // old data doesn't have it
+                        continue;
+                    }
+                    if (n.required && !old->required) return false;
+                    if (!type_accepts(n.type, old->type)) return false;
+                    if (n.constraints && n.constraints != old->constraints) return false;
+                }
                 return true;
-                
+            }
+
             case EvolutionStrategy::FLEXIBLE:
-                // Always compatible with migrations
                 return true;
         }
         return false;
+    }
+
+    // Can a field of type `to` hold every value a field of type `from` accepts?
+    static bool type_accepts(const std::string& to, const std::string& from) {
+        if (to == from || to == "any") return true;
+        if (to == "number") return from == "int" || from == "uint" || from == "float";
+        if (to == "bigint") return from == "int" || from == "uint";
+        return false;
+    }
+
+    bool hasMigrationTo(const SchemaVersion& target) const {
+        return version_ == target || migrations_.count({version_, target}) > 0;
     }
     
     void setEvolutionStrategy(EvolutionStrategy strategy) {
@@ -426,7 +493,7 @@ public:
     void parseFromValue(const Value& value) {
         const Map* schema_map = std::get_if<Map>(&value);
         if (!schema_map) {
-            throw BtoonException("Schema definition must be a map");
+            throw BtoonException(ErrorCode::invalid_argument, "Schema definition must be a map");
         }
         
         // Parse name
@@ -759,7 +826,9 @@ bool Schema::isCompatibleWith(const Schema& other) const {
 }
 
 bool Schema::canMigrateTo(const Schema& target) const {
-    return pimpl_->migrate(Map{}, target.getVersion()).has_value();
+    // A lookup: running the migration on a placeholder value, as before 0.3.0, called user
+    // code with data it wasn't written for.
+    return pimpl_->hasMigrationTo(target.getVersion());
 }
 
 void Schema::setEvolutionStrategy(EvolutionStrategy strategy) {
@@ -813,6 +882,7 @@ std::optional<Value> Schema::getMetadata(const std::string& key) const {
 class SchemaRegistry::RegistryImpl {
 public:
     void registerSchema(const std::string& name, std::shared_ptr<Schema> schema) {
+        if (!schema) throw BtoonException(ErrorCode::invalid_argument, "registerSchema: schema is null");
         schemas_[name][schema->getVersion()] = schema;
     }
     
@@ -912,7 +982,7 @@ public:
     void parseFromValue(const Value& value) {
         const Map* registry_map = std::get_if<Map>(&value);
         if (!registry_map) {
-            throw BtoonException("Registry must be a map");
+            throw BtoonException(ErrorCode::invalid_argument, "Registry must be a map");
         }
         
         if (registry_map->count("schemas")) {
@@ -941,6 +1011,7 @@ void SchemaRegistry::registerSchema(const std::string& name, std::shared_ptr<Sch
 }
 
 void SchemaRegistry::registerSchema(std::shared_ptr<Schema> schema) {
+    if (!schema) throw BtoonException(ErrorCode::invalid_argument, "registerSchema: schema is null");
     pimpl_->registerSchema(schema->getName(), schema);
 }
 
@@ -1140,7 +1211,9 @@ public:
             else if constexpr (std::is_same_v<T, Date>) return "date";
             else if constexpr (std::is_same_v<T, DateTime>) return "datetime";
             else if constexpr (std::is_same_v<T, BigInt>) return "bigint";
-            else return "unknown";
+            else if constexpr (std::is_same_v<T, VectorFloat>) return "vector_float";
+            else if constexpr (std::is_same_v<T, VectorDouble>) return "vector_double";
+            else return "any";
         }, value);
     }
     
@@ -1326,62 +1399,28 @@ SchemaInferrer& SchemaInferrer::operator=(SchemaInferrer&&) noexcept = default;
 Schema SchemaInferrer::infer(const Value& value, const std::string& name) {
     if (const Map* map = std::get_if<Map>(&value)) {
         return pimpl_->inferFromMap(*map, name);
-    } else if (const Array* array = std::get_if<Array>(&value)) {
-        return inferFromArray(*array, name);
-    } else {
-        // For primitive values, create a single-field schema
-        SchemaBuilder builder(name);
-        builder.version(1, 0, 0);
-        builder.field("value", pimpl_->inferType(value));
-        pimpl_->stats.samples_analyzed = 1;
-        pimpl_->stats.fields_discovered = 1;
-        return std::move(*builder.build());
     }
+    if (const Array* array = std::get_if<Array>(&value)) {
+        return inferFromArray(*array, name);
+    }
+    // Before 0.3.0 a scalar got a one-field schema ("value") that rejected the scalar itself.
+    throw BtoonException(ErrorCode::invalid_argument,
+                         std::string("a schema describes maps; can't infer one from a ") + value.type_name());
 }
 
 Schema SchemaInferrer::inferFromArray(const Array& array, const std::string& name) {
     if (array.empty()) {
         return Schema(name, SchemaVersion{1, 0, 0}, {});
     }
-    
-    // Check if it's an array of maps (tabular data)
-    bool all_maps = true;
+    // The schema describes each row. Before 0.3.0 an array of other values got an "items"
+    // field, and the schema rejected the array it came from.
     for (const auto& item : array) {
         if (!std::holds_alternative<Map>(item)) {
-            all_maps = false;
-            break;
+            throw BtoonException(ErrorCode::invalid_argument,
+                                 std::string("inferFromArray needs an array of maps; found a ") + item.type_name());
         }
     }
-    
-    if (all_maps) {
-        return pimpl_->inferFromArrayOfMaps(array, name);
-    } else {
-        // Infer schema for array of primitives or mixed types
-        std::set<std::string> item_types;
-        std::vector<Value> sample_values;
-        
-        size_t count = 0;
-        for (const auto& item : array) {
-            if (count >= pimpl_->options.sample_size) break;
-            item_types.insert(pimpl_->inferType(item));
-            sample_values.push_back(item);
-            count++;
-        }
-        
-        SchemaBuilder builder(name);
-        builder.version(1, 0, 0);
-        
-        // Create a schema with an "items" field representing the array element type
-        std::string item_type = item_types.size() == 1 ? *item_types.begin() : "any";
-        SchemaField items_field{"items", item_type, true, std::nullopt, std::nullopt, 
-                               pimpl_->inferConstraints(sample_values, item_type)};
-        builder.field(items_field);
-        
-        pimpl_->stats.samples_analyzed = count;
-        pimpl_->stats.fields_discovered = 1;
-        
-        return std::move(*builder.build());
-    }
+    return pimpl_->inferFromArrayOfMaps(array, name);
 }
 
 Schema SchemaInferrer::merge(std::vector<Schema>&& schemas, const std::string& name) {
@@ -1419,14 +1458,18 @@ Schema SchemaInferrer::merge(std::vector<Schema>&& schemas, const std::string& n
                 if (existing.type != field.type) {
                     if (pimpl_->options.merge_numeric_types &&
                         ((existing.type == "int" || existing.type == "uint" || existing.type == "float" || existing.type == "number") &&
-                         (field.type == "int" || field.type == "uint" || field.type == "float"))) {
+                         (field.type == "int" || field.type == "uint" || field.type == "float" || field.type == "number"))) {
                         existing.type = "number";
                     } else {
                         existing.type = "any";
                     }
                 }
-                
-                // TODO: Merge constraints intelligently
+
+                // The merged constraints accept what each schema's do (before 0.3.0 the
+                // first schema's were kept, so the merge rejected the others' data).
+                existing.constraints = existing.type == "any"
+                                           ? std::nullopt
+                                           : merge_constraints(existing.constraints, field.constraints);
             }
         }
     }

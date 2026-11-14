@@ -2,8 +2,9 @@
 #include "btoon/validator.h"
 #include "btoon/encoder.h"
 #include "btoon/decoder.h"
-#include <vector>
+#include <random>
 #include <string>
+#include <vector>
 
 using namespace btoon;
 
@@ -195,26 +196,20 @@ TEST_F(ValidatorTest, TypeValidation) {
     EXPECT_TRUE(TypeValidator::validateExtension(reserved_ext));  // SPEC §5: reserved ids are generic, not invalid
 }
 
+// SecurityValidator's byte-scanning heuristics moved to experimental/ in 0.3.0; the
+// decoder enforces the same limits exactly, and Validator reports them as errors.
 TEST_F(ValidatorTest, SecurityChecks) {
-    // Check for zip bomb
-    std::vector<uint8_t> zip_bomb_header = {
+    Validator validator;
+    EXPECT_FALSE(validator.validate(excessive_depth).valid);
+    EXPECT_FALSE(validator.validate(huge_string_claim).valid);
+    // A compressed header claiming a 65536:1 ratio isn't a document.
+    const std::vector<uint8_t> zip_bomb_header = {
         0x42, 0x54, 0x4F, 0x4E,  // Magic "BTON"
         0x01, 0x00, 0x00, 0x00,  // Version
         0x00, 0x00, 0x00, 0x10,  // Compressed size: 16
         0x00, 0x10, 0x00, 0x00   // Uncompressed size: 1MB (65536:1 ratio)
     };
-    
-    auto issues = SecurityValidator::checkSecurity(zip_bomb_header);
-    EXPECT_FALSE(issues.empty());
-    
-    // Check nesting depth
-    auto deep_data = createDeeplyNested(200);
-    EXPECT_FALSE(SecurityValidator::checkNestingDepth(deep_data, 100));
-    EXPECT_TRUE(SecurityValidator::checkNestingDepth(valid_array, 100));
-    
-    // Check size claims
-    EXPECT_FALSE(SecurityValidator::checkSizeClaims(huge_string_claim));
-    EXPECT_TRUE(SecurityValidator::checkSizeClaims(valid_string));
+    EXPECT_FALSE(validator.validate(zip_bomb_header).valid);
 }
 
 TEST_F(ValidatorTest, ValidateWithStatistics) {
@@ -330,4 +325,70 @@ TEST(ValidatorFixes, ByteInputHonorsTheOptions) {
     // Pre-1970 and post-2100 timestamps are valid documents.
     EXPECT_TRUE(Validator().validate(encode(Timestamp{-86400})).valid);
     EXPECT_TRUE(Validator().validate(encode(Timestamp{4200000000LL, 5})).valid);
+}
+
+// --- Review 2026-11-13: the Validator's remaining findings (0.3.0) ---------------------------
+
+// UTF8Validator::sanitize copied overlong forms, surrogates and code points above U+10FFFF
+// through unchanged, and a bad continuation byte swallowed the valid bytes after it.
+TEST(ValidatorFixes, SanitizeProducesValidUtf8AndKeepsValidBytes) {
+    struct Case {
+        std::string in, out;
+    };
+    const std::string fffd = "\xEF\xBF\xBD";
+    const Case cases[] = {
+        {"\xC0\x80", fffd + fffd},                         // overlong NUL: two invalid bytes
+        {"\xED\xA0\x80", fffd + fffd + fffd},             // a surrogate
+        {"\xF4\x90\x80\x80", fffd + fffd + fffd + fffd}, // above U+10FFFF
+        {"\xE2" "AB", fffd + "AB"},                       // the valid bytes after a bad lead stay
+        {"a\xE2\x82", "a" + fffd},                         // a truncated sequence is one subpart
+        {"\xF0\x9F\x98", fffd},                           // truncated emoji
+        {"\xF0\x9F\x98\x80x", "\xF0\x9F\x98\x80x"},       // valid 4-byte sequence
+        {"\xFF\xFE", fffd + fffd},
+        {"Hello, \xE4\xB8\x96\xE7\x95\x8C", "Hello, \xE4\xB8\x96\xE7\x95\x8C"},
+        {"\xE0\x80\x80", fffd + fffd + fffd},             // overlong 3-byte
+        {"\xEF\xBF\xBF", "\xEF\xBF\xBF"},                 // U+FFFF is valid
+    };
+    for (const Case& c : cases) {
+        const std::string out = UTF8Validator::sanitize(c.in);
+        EXPECT_EQ(out, c.out);
+        EXPECT_TRUE(UTF8Validator::isValid(out));
+    }
+    // Random bytes always come out valid, and valid input comes out unchanged.
+    std::mt19937 rng(7);
+    for (int round = 0; round < 2000; ++round) {
+        std::string in(rng() % 24, '\0');
+        for (auto& ch : in) ch = static_cast<char>(rng() % 3 == 0 ? 0x80 + rng() % 0x80 : rng() % 0x100);
+        const std::string out = UTF8Validator::sanitize(in);
+        ASSERT_TRUE(UTF8Validator::isValid(out));
+        if (UTF8Validator::isValid(in)) EXPECT_EQ(out, in);
+    }
+}
+
+// isValid()/quickCheck() looked only at the first byte, so truncated input passed; the
+// heuristic depth scan warned about flat documents.
+TEST(ValidatorFixes, QuickCheckDecodesAndFlatDataHasNoWarnings) {
+    const std::vector<uint8_t> truncated{0xdb, 0xff, 0xff, 0xff, 0xff};
+    EXPECT_FALSE(isValid(truncated));
+    EXPECT_FALSE(validate(truncated).valid);
+    EXPECT_TRUE(isValid(encode(Map{{"a", Int(1)}})));
+    EXPECT_FALSE(isValid(std::vector<uint8_t>{0x01, 0x02})) << "trailing data";
+    ValidationOptions shallow;
+    shallow.max_depth = 2;
+    EXPECT_FALSE(Validator(shallow).quickCheck(std::vector<uint8_t>{0x91, 0x91, 0x91, 0xc0}));
+
+    Array flat;
+    for (int i = 0; i < 200; ++i) flat.push_back(Map{});
+    const auto flat_bytes = encode(Value(flat));
+    const auto result = Validator().validate(flat_bytes);
+    EXPECT_TRUE(result.valid);
+    EXPECT_TRUE(result.warnings.empty()) << result.warnings.front();
+    const auto binary = encode(Value(Binary(300, 0x90)));
+    EXPECT_TRUE(Validator().validate(binary).warnings.empty());
+
+    ValidationOptions stats;
+    stats.collect_stats = true;
+    const auto with_stats = Validator(stats).validate(flat_bytes);
+    ASSERT_TRUE(with_stats.stats);
+    EXPECT_EQ(with_stats.stats->total_size, flat_bytes.size());
 }

@@ -1,7 +1,11 @@
+// SPDX-FileCopyrightText: 2025 Alvar Laigna <https://alvarlaigna.com>
+// SPDX-License-Identifier: MIT
 #include "btoon/memory_pool.h"
+#include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <algorithm>
+#include <new>
 
 namespace btoon {
 
@@ -64,55 +68,67 @@ MemoryPool::~MemoryPool() {
     // Blocks are automatically freed by unique_ptr
 }
 
+namespace {
+// Rounds up to a multiple of the alignment, so every chunk handed out, returned and split
+// starts on an aligned address. 0 rounds to one unit: each allocation is distinct.
+size_t aligned_size(size_t size) {
+    if (size > SIZE_MAX - (MemoryPool::SIMD_ALIGNMENT - 1)) throw std::bad_alloc();
+    const size_t rounded = (size + MemoryPool::SIMD_ALIGNMENT - 1) & ~(MemoryPool::SIMD_ALIGNMENT - 1);
+    return rounded == 0 ? MemoryPool::SIMD_ALIGNMENT : rounded;
+}
+}  // namespace
+
 void* MemoryPool::allocate(size_t size) {
+    // Before 0.3.0 the rounding could wrap (allocate(SIZE_MAX - 16) returned a few bytes
+    // that the next allocation overlapped), and chunks were reused and split at unaligned
+    // sizes, breaking the 32-byte alignment.
+    const size_t need = aligned_size(size);
+
     // Try to reuse from free list first
     if (!free_list_.empty()) {
         auto it = free_list_.top();
-        if (it.size >= size) {
+        if (it.size >= need) {
             free_list_.pop();
             current_usage_ += size;
-            
-            // If the chunk is significantly larger, split it
-            if (it.size > size + 64) {
-                void* remaining_ptr = static_cast<uint8_t*>(it.ptr) + size;
-                free_list_.push(FreeChunk(remaining_ptr, it.size - size));
+
+            // If the chunk is significantly larger, split it (at an aligned offset)
+            if (it.size - need > 64) {
+                void* remaining_ptr = static_cast<uint8_t*>(it.ptr) + need;
+                free_list_.push(FreeChunk(remaining_ptr, it.size - need));
             }
-            
+
             return it.ptr;
         }
     }
-    
-    // Align size to maintain alignment for subsequent allocations
-    size_t aligned_size = (size + SIMD_ALIGNMENT - 1) & ~(SIMD_ALIGNMENT - 1);
-    
+
     // Allocate from current block
-    if (aligned_size > remaining_) {
+    if (need > remaining_) {
         // If requested size is very large, allocate a dedicated block
-        if (aligned_size > block_size_ / 2) {
-            new_block(aligned_size);
+        if (need > block_size_ / 2) {
+            new_block(need);
         } else {
             new_block(block_size_);
         }
     }
-    
+
     void* ptr = current_pos_;
-    current_pos_ += aligned_size;
-    remaining_ -= aligned_size;
+    current_pos_ += need;
+    remaining_ -= need;
     current_usage_ += size;
-    
+
     return ptr;
 }
 
 void MemoryPool::deallocate(void* ptr, size_t size) {
     if (!ptr) return;
-    
-    // Add to free list for reuse
-    free_list_.push(FreeChunk(ptr, size));
-    current_usage_ -= size;
+
+    // Add to free list for reuse, with the size allocate() actually reserved
+    free_list_.push(FreeChunk(ptr, aligned_size(size)));
+    current_usage_ -= std::min(size, current_usage_);
 }
 
 void MemoryPool::new_block(size_t min_size) {
-    size_t size = std::max(min_size, block_size_);
+    size_t size = aligned_size(std::max(min_size, block_size_));
     
     // Grow block size for next allocation (up to a limit)
     if (block_size_ < 1024 * 1024) {  // Max 1MB blocks

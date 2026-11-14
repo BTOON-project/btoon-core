@@ -345,3 +345,58 @@ check("batch with a bad file" 1 DIR "${W}/batch" COMMAND "${CONVERT}" --batch in
 if(NOT EXISTS "${W}/batch/out4/one.btoon")
     message(SEND_ERROR "batch with a bad file: the good files weren't converted")
 endif()
+
+# --- btoon-schema generate, infer and migrate (review 2026-11-13, fixed in 0.3.0) ----------
+
+# The generated C++ is compiled and run by the codegen_cpp test. Here: the identifiers, and
+# Python that imports and round-trips (before 0.3.0 an optional field before a required one
+# made the dataclass fail at import, and "first-name" wasn't an identifier).
+check("generate C++" 0 COMMAND "${SCHEMA}" generate "${F}/codegen.schema.json" -l cpp -o gen.h)
+contains("C++ identifiers" "${W}/gen.h" "std::optional<std::string> first_name;")
+contains("C++ keywords get a suffix" "${W}/gen.h" "bool class_{};")
+check("generate TypeScript" 0 COMMAND "${SCHEMA}" generate "${F}/codegen.schema.json" -l ts -o gen.ts)
+contains("TypeScript quotes names that aren't identifiers" "${W}/gen.ts" "\"first-name\"\\?: string;")
+check("generate Python" 0 COMMAND "${SCHEMA}" generate "${F}/codegen.schema.json" -l python -o sensor_reading.py)
+contains("Python: required fields first" "${W}/sensor_reading.py" "    m: Dict\\[str, Any\\]\n    note: Optional\\[str\\] = None")
+check("generate to standard output" 0 COMMAND "${SCHEMA}" generate "${F}/codegen.schema.json" -l ts -o -)
+check("generate an unsupported language" 1 STDERR "Unsupported" COMMAND "${SCHEMA}" generate "${F}/codegen.schema.json" -l go)
+file(WRITE "${W}/clash.json" "{\"name\":\"c\",\"version\":\"1.0.0\",\"fields\":[{\"name\":\"a-b\",\"type\":\"int\"},{\"name\":\"a_b\",\"type\":\"int\"}]}")
+check("generate with clashing identifiers" 1 STDERR "both become" COMMAND "${SCHEMA}" generate clash.json -l cpp -o -)
+if(PYTHON)
+    file(WRITE "${W}/use_generated.py" [=[
+import sensor_reading as m
+
+data = {"count": 5, "value": 2.5, "id": -1, "class": True, "m": {"k": 1}, "first-name": "Ada",
+        "2fa": False, "quote\"key": "q", "self": 0.5}
+r = m.SensorReading.from_dict(data)
+assert (r.count, r.first_name, r.class_, r._2fa, r.self_, r.note) == (5, "Ada", True, False, 0.5, None), r
+assert r.to_dict() == data, r.to_dict()
+assert m.SensorReading.__doc__ == 'A "reading"\nfrom a sensor', m.SensorReading.__doc__
+try:
+    m.SensorReading.from_dict({"count": 1})
+except KeyError:
+    pass
+else:
+    raise AssertionError("a missing required field was accepted")
+print("generated Python works")
+]=])
+    check("generated Python imports and round-trips" 0 COMMAND "${PYTHON}" use_generated.py)
+else()
+    message(STATUS "no Python here; skipping the generated Python check")
+endif()
+
+# infer: a schema describes maps, so a scalar or an array of scalars is an error instead of
+# a schema that rejects its own input.
+file(WRITE "${W}/scalars.json" "[1, 2, 3]")
+check("infer from an array of scalars" 1 STDERR "invalid_argument" COMMAND "${SCHEMA}" infer scalars.json)
+
+# migrate: without a migration function (the command line can't load one), data moves to a
+# compatible newer version unchanged and is validated there.
+file(WRITE "${W}/v1.json" "{\"name\":\"user\",\"version\":\"1.0.0\",\"evolution_strategy\":\"additive\",\"fields\":[{\"name\":\"id\",\"type\":\"int\"}]}")
+file(WRITE "${W}/v2.json" "{\"name\":\"user\",\"version\":\"1.1.0\",\"fields\":[{\"name\":\"id\",\"type\":\"int\"},{\"name\":\"nick\",\"type\":\"string\",\"required\":false}]}")
+file(WRITE "${W}/v3.json" "{\"name\":\"user\",\"version\":\"2.0.0\",\"fields\":[{\"name\":\"id\",\"type\":\"string\"}]}")
+file(WRITE "${W}/user.json" "{\"id\": 5}")
+check("migrate to a compatible version" 0 COMMAND "${SCHEMA}" migrate user.json v1.json v2.json -o user2.btoon)
+check("migrated data" 0 COMMAND "${BTOON}" decode user2.btoon user2.json --compact)
+expect_text("migrated data is unchanged" "${W}/user2.json" "{\"id\":5}\n")
+check("migrate to an incompatible version" 1 STDERR "Cannot migrate" COMMAND "${SCHEMA}" migrate user.json v1.json v3.json -o x.btoon)

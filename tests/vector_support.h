@@ -4,6 +4,7 @@
 #define BTOON_TESTS_VECTOR_SUPPORT_H
 
 #include <bit>
+#include <cstring>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -86,17 +87,26 @@ inline double parse_float(const std::string& s) {
 }
 
 // Vector elements (docs/SPEC.md §10): "NaN" is the canonical quiet NaN of the width, and
-// "0x…" gives an exact bit pattern (NaN payloads are kept inside vectors, §5.5).
-inline float parse_float32_element(const std::string& s) {
-    if (s.rfind("0x", 0) == 0) return std::bit_cast<float>(static_cast<uint32_t>(std::stoul(s.substr(2), nullptr, 16)));
-    if (s == "NaN") return std::bit_cast<float>(uint32_t{0x7fc00000});
-    return static_cast<float>(parse_float(s));
+// "0x…" gives an exact bit pattern (NaN payloads are kept inside vectors, §5.5). They're
+// parsed as bit patterns and copied into place: on 32-bit x86 a float returned by value
+// passes through the x87 stack, which quiets a signaling NaN.
+inline uint32_t float32_element_bits(const std::string& s) {
+    if (s.rfind("0x", 0) == 0) return static_cast<uint32_t>(std::stoul(s.substr(2), nullptr, 16));
+    if (s == "NaN") return 0x7fc00000u;
+    return std::bit_cast<uint32_t>(static_cast<float>(parse_float(s)));
 }
 
-inline double parse_float64_element(const std::string& s) {
-    if (s.rfind("0x", 0) == 0) return std::bit_cast<double>(static_cast<uint64_t>(std::stoull(s.substr(2), nullptr, 16)));
-    if (s == "NaN") return std::bit_cast<double>(uint64_t{0x7ff8000000000000});
-    return parse_float(s);
+inline uint64_t float64_element_bits(const std::string& s) {
+    if (s.rfind("0x", 0) == 0) return static_cast<uint64_t>(std::stoull(s.substr(2), nullptr, 16));
+    if (s == "NaN") return 0x7ff8000000000000ull;
+    return std::bit_cast<uint64_t>(parse_float(s));
+}
+
+template <class T, class Bits>
+void append_bits(std::vector<T>& out, Bits bits) {
+    static_assert(sizeof(T) == sizeof(Bits));
+    out.emplace_back();
+    std::memcpy(&out.back(), &bits, sizeof bits);
 }
 
 inline Value from_typed(const nlohmann::json& t) {
@@ -132,12 +142,12 @@ inline Value from_typed(const nlohmann::json& t) {
     if (kind == "datetime") return Value(btoon::DateTime{std::stoll(x.get<std::string>())});
     if (kind == "float32_vector") {
         btoon::VectorFloat v;
-        for (const auto& e : x) v.data.push_back(parse_float32_element(e.get<std::string>()));
+        for (const auto& e : x) append_bits(v.data, float32_element_bits(e.get<std::string>()));
         return Value(std::move(v));
     }
     if (kind == "float64_vector") {
         btoon::VectorDouble v;
-        for (const auto& e : x) v.data.push_back(parse_float64_element(e.get<std::string>()));
+        for (const auto& e : x) append_bits(v.data, float64_element_bits(e.get<std::string>()));
         return Value(std::move(v));
     }
     if (kind == "ext") {

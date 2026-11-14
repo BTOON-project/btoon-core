@@ -464,3 +464,118 @@ TEST_F(SchemaVersioningTest, SchemaBuilder) {
     EXPECT_TRUE(nickname_field->description.has_value());
     EXPECT_EQ(nickname_field->description.value(), "User's preferred nickname");
 }
+
+// --- Review 2026-11-13: schema evolution (0.3.0) ------------------------------------------
+
+namespace {
+std::shared_ptr<Schema> with_strategy(std::shared_ptr<Schema> s, EvolutionStrategy strategy) {
+    s->setEvolutionStrategy(strategy);
+    return s;
+}
+}  // namespace
+
+// isCompatibleWith() did the opposite of the EvolutionStrategy comments: STRICT rejected an
+// identical schema, while BACKWARD_COMPATIBLE accepted a type change and ADDITIVE a new
+// required field.
+TEST(SchemaEvolutionFixes, StrategiesFollowTheirDefinitions) {
+    auto base = [] { return SchemaBuilder("s").field("a", "int").optionalField("b", "string").build(); };
+    auto strict = with_strategy(base(), EvolutionStrategy::STRICT);
+    EXPECT_TRUE(strict->isCompatibleWith(*base())) << "an identical schema is no change";
+    EXPECT_FALSE(strict->isCompatibleWith(*SchemaBuilder("s").field("a", "int").build()));
+    EXPECT_FALSE(strict->isCompatibleWith(
+        *SchemaBuilder("s").field("a", "int").optionalField("b", "string").optionalField("c", "int").build()));
+    EXPECT_FALSE(strict->isCompatibleWith(*SchemaBuilder("s").field("a", "int").field("b", "string").build()));
+
+    auto additive = with_strategy(base(), EvolutionStrategy::ADDITIVE);
+    EXPECT_TRUE(additive->isCompatibleWith(*base()));
+    EXPECT_TRUE(additive->isCompatibleWith(
+        *SchemaBuilder("s").version(2).field("a", "int").optionalField("b", "string").optionalField("c", "int").build()));
+    EXPECT_FALSE(additive->isCompatibleWith(
+        *SchemaBuilder("s").version(2).field("a", "int").optionalField("b", "string").field("c", "int").build()))
+        << "a new required field";
+    EXPECT_FALSE(additive->isCompatibleWith(*SchemaBuilder("s").version(2).field("a", "int").build())) << "a removal";
+    EXPECT_FALSE(additive->isCompatibleWith(
+        *SchemaBuilder("s").version(2).field("a", "number").optionalField("b", "string").build()))
+        << "a type change";
+
+    auto backward = with_strategy(base(), EvolutionStrategy::BACKWARD_COMPATIBLE);
+    EXPECT_FALSE(backward->isCompatibleWith(
+        *SchemaBuilder("s").version(2).field("a", "string").optionalField("b", "string").build()))
+        << "int -> string";
+    EXPECT_TRUE(backward->isCompatibleWith(*SchemaBuilder("s").version(2).field("a", "number").build()))
+        << "a widening and a removal";
+    EXPECT_TRUE(backward->isCompatibleWith(*SchemaBuilder("s").version(2).optionalField("a", "int").build()))
+        << "required -> optional";
+    EXPECT_FALSE(backward->isCompatibleWith(
+        *SchemaBuilder("s").version(2).field("a", "int").field("b", "string").build()))
+        << "optional -> required";
+    EXPECT_FALSE(backward->isCompatibleWith(
+        *SchemaBuilder("s").version(2).field("a", "int").field("c", "int").build()))
+        << "a new required field";
+    EXPECT_FALSE(backward->isCompatibleWith(
+        *SchemaBuilder("s").version(2).field("a", "int").withConstraint("a", Map{{"min", Int(0)}}).build()))
+        << "a new constraint";
+    auto strict_newer = with_strategy(SchemaBuilder("s").version(2).field("a", "int").build(), EvolutionStrategy::STRICT);
+    EXPECT_FALSE(backward->isCompatibleWith(*strict_newer)) << "a STRICT newer schema rejects the removed field b";
+
+    // The rule holds in practice: data valid under the old schema validates under a
+    // compatible newer one.
+    auto newer = SchemaBuilder("s").version(2).field("a", "number").optionalField("c", "bool").build();
+    ASSERT_TRUE(backward->isCompatibleWith(*newer));
+    for (const Value& v : {Value(Map{{"a", Int(1)}}), Value(Map{{"a", Int(-7)}, {"b", String("x")}})}) {
+        ASSERT_TRUE(backward->validate(v));
+        EXPECT_TRUE(newer->validate(v));
+    }
+
+    auto flexible = with_strategy(base(), EvolutionStrategy::FLEXIBLE);
+    EXPECT_TRUE(flexible->isCompatibleWith(*SchemaBuilder("t").field("z", "binary").build()));
+}
+
+// canMigrateTo() ran the migration on an empty map to see whether it existed: user code
+// ran on data it wasn't written for, and its exceptions (std::out_of_range from
+// map::at) escaped.
+TEST(SchemaEvolutionFixes, CanMigrateToDoesNotRunTheMigration) {
+    auto v1 = SchemaBuilder("s").version(1).field("old", "string").build();
+    auto v2 = SchemaBuilder("s").version(2).field("new", "string").build();
+    auto v3 = SchemaBuilder("s").version(3).field("new", "string").build();
+    int calls = 0;
+    v1->addMigration(SchemaVersion(1), SchemaVersion(2), [&](const Value& v) -> Value {
+        ++calls;
+        Map m = std::get<Map>(v);
+        m["new"] = m.at("old");
+        m.erase("old");
+        return m;
+    });
+    EXPECT_TRUE(v1->canMigrateTo(*v2));
+    EXPECT_FALSE(v1->canMigrateTo(*v3));
+    EXPECT_TRUE(v1->canMigrateTo(*v1)) << "same version";
+    EXPECT_EQ(calls, 0);
+    auto migrated = v1->migrate(Map{{"old", String("x")}}, SchemaVersion(2));
+    ASSERT_TRUE(migrated);
+    EXPECT_EQ(calls, 1);
+    EXPECT_TRUE(v2->validate(*migrated));
+    EXPECT_FALSE(v1->migrate(Map{{"old", String("x")}}, SchemaVersion(3)));
+}
+
+// Schema APIs report bad input as BtoonException with a code; nothing else escapes.
+TEST(SchemaEvolutionFixes, BadInputIsABtoonException) {
+    auto code_of = [](auto&& f) {
+        try {
+            f();
+        } catch (const BtoonException& e) {
+            return e.code();
+        }
+        return ErrorCode::generic;
+    };
+    EXPECT_EQ(code_of([] { Schema::fromValue(Value(Int(1))); }), ErrorCode::invalid_argument);
+    EXPECT_EQ(code_of([] { Schema::fromValue(Map{{"version", String("1.x")}}); }), ErrorCode::invalid_argument);
+    EXPECT_EQ(code_of([] { SchemaVersion::fromString("4294967296.1.2"); }), ErrorCode::invalid_argument);
+    EXPECT_EQ(code_of([] {
+                  SchemaBuilder("t").field("x", "string").withConstraint("x", Map{{"pattern", String("([a-z]")}}).build();
+              }),
+              ErrorCode::invalid_argument);
+    EXPECT_EQ(code_of([] { SchemaRegistry::fromValue(Value(String("no"))); }), ErrorCode::invalid_argument);
+    SchemaRegistry registry;
+    EXPECT_EQ(code_of([&] { registry.registerSchema(nullptr); }), ErrorCode::invalid_argument);
+    EXPECT_EQ(code_of([&] { registry.registerSchema("x", nullptr); }), ErrorCode::invalid_argument);
+}

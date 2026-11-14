@@ -26,8 +26,8 @@ cmake --build build-rel --target btoon_bench && build-rel/btoon_bench 10000
   validation off with `validate_utf8=false` only when the strings are known to be good.
 - **Decode** is dominated by building the `Value` tree: one `std::map` node per key and
   one `std::string` per string. Canonical (sorted) input inserts in O(1) through
-  `try_emplace(end(), …)`. If you only need a few fields, `Validator` checks structure
-  without allocating anything.
+  `try_emplace(end(), …)`. `Validator` decodes too (it checks the decoded value), so it
+  costs at least as much as `decode()`.
 - **Tabular** encodes slightly slower than plain (it walks the table column by column),
   but it writes far fewer bytes, which usually wins once I/O or compression is involved.
 

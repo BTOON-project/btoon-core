@@ -3,11 +3,14 @@
 // Run under -DENABLE_SANITIZERS=ON to turn any memory error into a failure.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <random>
+#include <string_view>
 
 #include <sstream>
 
@@ -690,4 +693,459 @@ TEST(Spec02, MaxValuesBoundsLargeDocumentsAndCanBeRaised) {
     EXPECT_EQ(std::get<Array>(decode(bytes, raised)).size(), big.size());
     raised.max_values = 3000000;
     EXPECT_EQ(code_of(bytes, raised), ErrorCode::size_limit);
+}
+
+// --- Review 2026-11-13: the remaining codec findings (0.3.0) -------------------------------
+
+// Security::setAllowedTypes rejected a plain array of maps but accepted the same rows in
+// tabular form: the decoder built the row maps without checking that maps were allowed.
+TEST(Fixes030, TabularRowsObeyTypeRestrictions) {
+    Array rows;
+    for (int i = 0; i < 8; ++i) rows.push_back(Map{{"id", Int(i)}});
+    const auto tabular = encode(Value(rows));
+    ASSERT_EQ(tabular[2], 0xf6) << "the canonical form is tabular";
+    EncodeOptions plain_opts;
+    plain_opts.auto_tabular = false;
+    const auto plain = encode(Value(rows), plain_opts);
+
+    Security no_maps;
+    no_maps.setAllowedTypes({0, 2, 7});  // nil, int, array
+    Decoder restricted(no_maps);
+    restricted.setSecurityEnabled(false);
+    for (const auto* bytes : {&plain, &tabular}) {
+        try {
+            restricted.decode(*bytes);
+            ADD_FAILURE() << "maps were accepted (" << (bytes == &plain ? "plain" : "tabular") << ")";
+        } catch (const BtoonException& e) {
+            EXPECT_EQ(e.code(), ErrorCode::invalid_argument);
+            EXPECT_NE(std::string(e.what()).find("map"), std::string::npos) << e.what();
+        }
+    }
+
+    // With maps allowed, both forms decode; an empty table has no rows to restrict.
+    Security with_maps;
+    with_maps.setAllowedTypes({0, 2, 7, 8});
+    Decoder allowed(with_maps);
+    allowed.setSecurityEnabled(false);
+    EXPECT_EQ(allowed.decode(tabular), Value(rows));
+    EXPECT_EQ(allowed.decode(plain), Value(rows));
+    const std::vector<uint8_t> empty_table{0xc7, 0x0c, 0xf6, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
+    EXPECT_EQ(restricted.decode(empty_table), Value(Array{}));
+    // Cells are still checked one by one.
+    Security no_strings;
+    no_strings.setAllowedTypes({0, 2, 7, 8});
+    Decoder cells(no_strings);
+    cells.setSecurityEnabled(false);
+    Array named;
+    for (int i = 0; i < 8; ++i) named.push_back(Map{{"name", String("n")}});
+    EXPECT_THROW(cells.decode(encode(Value(named))), BtoonException);
+}
+
+// The LZ4 plausibility bound in.size() * 255 + 16 was computed in size_t, which wraps on
+// 32-bit targets once the payload passes 16.8 MB: a valid 51 MB document whose LZ4
+// payload is 17 MB was rejected as invalid_envelope on i386. This test only discriminates
+// on 32-bit builds (CI's linux-i386 job); elsewhere it checks the round trip.
+TEST(Fixes030, LargeLz4EnvelopeDecodes) {
+    if (!compression_available(CompressionAlgorithm::LZ4)) GTEST_SKIP() << "built without LZ4";
+    // 16 random bytes and three copies of them, repeated: LZ4 compresses this about 3:1.
+    const size_t blocks = 808000;
+    Binary data(blocks * 64);
+    std::mt19937 rng(1);
+    for (size_t b = 0; b < blocks; ++b) {
+        uint8_t* p = data.data() + b * 64;
+        for (int i = 0; i < 16; ++i) p[i] = static_cast<uint8_t>(rng());
+        for (int r = 1; r < 4; ++r) std::memcpy(p + 16 * r, p, 16);
+    }
+    EncodeOptions lz4;
+    lz4.compress = true;
+    lz4.compression_algorithm = CompressionAlgorithm::LZ4;
+    lz4.compression_level = 1;
+    const auto envelope = encode(Value(data), lz4);
+    ASSERT_EQ(std::memcmp(envelope.data(), "BTON", 4), 0);
+    const uint64_t payload = envelope.size() - 16;
+    ASSERT_GT(payload * 255 + 16, uint64_t(UINT32_MAX)) << "the payload must be large enough to wrap 32 bits";
+    const Value back = decode(envelope);
+    ASSERT_TRUE(std::holds_alternative<Binary>(back));
+    EXPECT_TRUE(std::get<Binary>(back) == data);
+}
+
+// StreamDecoder read in 64 KiB chunks and refused to buffer more than
+// max_decompressed_size, so a limit below 64 KiB failed before reading anything.
+TEST(Fixes030, StreamDecoderReadsWithASmallLimit) {
+    std::ostringstream out;
+    {
+        StreamEncoder writer(out);
+        writer.write(Value(Int(1)));
+        writer.write(Value(String(std::string(3000, 'x'))));
+        writer.write(Value(Array{Int(2), Int(3)}));
+    }
+    const std::string bytes = out.str();
+    for (size_t limit : {size_t(1), size_t(4096), size_t(64 * 1024)}) {
+        DecodeOptions small;
+        small.max_decompressed_size = limit;
+        std::istringstream in(bytes);
+        StreamDecoder reader(in, small);
+        auto first = reader.read();
+        ASSERT_TRUE(first) << limit;
+        EXPECT_EQ(*first, Value(Int(1)));
+        if (limit < 3003) {
+            // The 3003-byte string doesn't fit in the limit.
+            try {
+                reader.read();
+                ADD_FAILURE() << "a value larger than the limit was read, limit " << limit;
+            } catch (const BtoonException& e) {
+                EXPECT_EQ(e.code(), ErrorCode::size_limit);
+            }
+            continue;
+        }
+        EXPECT_EQ(*reader.read(), Value(String(std::string(3000, 'x'))));
+        EXPECT_EQ(*reader.read(), Value(Array{Int(2), Int(3)}));
+        EXPECT_FALSE(reader.read());
+        EXPECT_FALSE(reader.has_next());
+    }
+}
+
+// Timestamp::to_milliseconds() and to_microseconds() multiplied without a range check:
+// signed overflow (undefined behavior) for valid 12-byte timestamps.
+TEST(Fixes030, TimestampUnitConversionsAreChecked) {
+    // seconds = 2^62, a valid 12-byte timestamp (SPEC §5.1).
+    const std::vector<uint8_t> far{0xc7, 0x0c, 0xff, 0, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0};
+    const auto ts = std::get<Timestamp>(decode(far));
+    EXPECT_EQ(ts.seconds, int64_t(1) << 62);
+    for (auto convert : {&Timestamp::to_milliseconds, &Timestamp::to_microseconds}) {
+        try {
+            (void)(ts.*convert)();
+            ADD_FAILURE() << "an unrepresentable instant was converted";
+        } catch (const BtoonException& e) {
+            EXPECT_EQ(e.code(), ErrorCode::invalid_argument);
+        }
+    }
+    // In range, including the extremes and negative instants (rounded down).
+    EXPECT_EQ(Timestamp(-1, 999999999).to_milliseconds(), -1);
+    EXPECT_EQ(Timestamp(-1, 999999999).to_microseconds(), -1);
+    EXPECT_EQ(Timestamp(1704067200, 123456789).to_milliseconds(), 1704067200123);
+    EXPECT_EQ(Timestamp(1704067200, 123456789).to_microseconds(), 1704067200123456);
+    const int64_t max_ms = std::numeric_limits<int64_t>::max();
+    EXPECT_EQ(Timestamp::from_milliseconds(max_ms).to_milliseconds(), max_ms);
+    EXPECT_EQ(Timestamp::from_milliseconds(INT64_MIN).to_milliseconds(), INT64_MIN);
+    EXPECT_EQ(Timestamp::from_microseconds(max_ms).to_microseconds(), max_ms);
+    EXPECT_EQ(Timestamp::from_microseconds(INT64_MIN).to_microseconds(), INT64_MIN);
+    EXPECT_THROW(Timestamp(INT64_MAX / 1000, 999999999).to_milliseconds(), BtoonException);
+    EXPECT_THROW(Timestamp(INT64_MIN / 1000 - 1, 0).to_milliseconds(), BtoonException);
+}
+
+// --- LZ4 block structure (SPEC §6, 0.3.0) ---------------------------------------------------
+//
+// liblz4's decoder skips the end-of-block checks, and accepts offset 0, for a sequence it
+// decodes on its fast path, which it takes while at least 32 bytes of output remain. Core
+// checks the block's structure itself before liblz4 runs. Each rule is tested with a short
+// output and, where liblz4's fast path applies, with an output of 32 bytes or more.
+
+namespace {
+
+// Builds an LZ4 block (lz4_Block_format.md) by hand.
+struct Lz4Block {
+    std::vector<uint8_t> bytes;
+
+    static void put_length(std::vector<uint8_t>& out, size_t n) {
+        for (; n >= 255; n -= 255) out.push_back(255);
+        out.push_back(static_cast<uint8_t>(n));
+    }
+    // Literals, then a match of `length` bytes (at least 4) from `offset` bytes back.
+    Lz4Block& seq(std::string_view literals, uint16_t offset, size_t length) {
+        const size_t lit = literals.size(), ml = length - 4;
+        bytes.push_back(static_cast<uint8_t>((std::min<size_t>(lit, 15) << 4) | std::min<size_t>(ml, 15)));
+        if (lit >= 15) put_length(bytes, lit - 15);
+        bytes.insert(bytes.end(), literals.begin(), literals.end());
+        bytes.push_back(static_cast<uint8_t>(offset & 0xff));
+        bytes.push_back(static_cast<uint8_t>(offset >> 8));
+        if (ml >= 15) put_length(bytes, ml - 15);
+        return *this;
+    }
+    // The last sequence: literals only. `match_bits` fills the token's low nibble.
+    Lz4Block& last(std::string_view literals, uint8_t match_bits = 0) {
+        const size_t lit = literals.size();
+        bytes.push_back(static_cast<uint8_t>((std::min<size_t>(lit, 15) << 4) | (match_bits & 15)));
+        if (lit >= 15) put_length(bytes, lit - 15);
+        bytes.insert(bytes.end(), literals.begin(), literals.end());
+        return *this;
+    }
+};
+
+// The decompressed block, or the error code it fails with (generic if none).
+ErrorCode lz4_code(const std::vector<uint8_t>& block, size_t size) {
+    try {
+        (void)decompress(CompressionAlgorithm::LZ4, block, size);
+        return ErrorCode::generic;
+    } catch (const BtoonException& e) {
+        return e.code();
+    }
+}
+
+std::vector<uint8_t> lz4_bytes(const std::vector<uint8_t>& block, size_t size) {
+    return decompress(CompressionAlgorithm::LZ4, block, size);
+}
+
+std::vector<uint8_t> text(std::string_view s) { return {s.begin(), s.end()}; }
+
+}  // namespace
+
+TEST(Lz4Block, OffsetZeroIsInvalid) {
+    if (!compression_available(CompressionAlgorithm::LZ4)) GTEST_SKIP() << "built without LZ4";
+    // 14 literals, a match at offset 0, 5 literals: 23 and (fast path) 37 bytes of output.
+    const auto short_block = Lz4Block{}.seq("abcdefghijklmn", 0, 4).last("vwxyz").bytes;
+    EXPECT_EQ(lz4_code(short_block, 23), ErrorCode::invalid_envelope);
+    const auto long_block = Lz4Block{}.seq("abcdefghijklmn", 0, 18).last("vwxyz").bytes;
+    EXPECT_EQ(lz4_code(long_block, 37), ErrorCode::invalid_envelope);
+    // The same blocks with offset 1 are fine.
+    const auto ok = Lz4Block{}.seq("abcdefghijklmn", 1, 18).last("vwxyz").bytes;
+    EXPECT_EQ(lz4_bytes(ok, 37), text("abcdefghijklmnnnnnnnnnnnnnnnnnnnvwxyz"));
+}
+
+TEST(Lz4Block, OffsetBeforeTheStartIsInvalid) {
+    if (!compression_available(CompressionAlgorithm::LZ4)) GTEST_SKIP() << "built without LZ4";
+    for (size_t length : {size_t(7), size_t(18)}) {
+        const auto bad = Lz4Block{}.seq("abcdefghijklmn", 15, length).last("vwxyz").bytes;  // 14 written
+        EXPECT_EQ(lz4_code(bad, 14 + length + 5), ErrorCode::invalid_envelope) << length;
+        const auto edge = Lz4Block{}.seq("abcdefghijklmn", 14, length).last("vwxyz").bytes;  // reaches byte 0
+        EXPECT_EQ(lz4_code(edge, 14 + length + 5), ErrorCode::generic) << length;
+    }
+    // A later match can reach into earlier literals and matches.
+    const auto chained = Lz4Block{}.seq("abcd", 4, 8).seq("xyz", 15, 7).last("12345").bytes;
+    EXPECT_EQ(lz4_bytes(chained, 27), text("abcdabcdabcdxyzabcdabc12345"));
+    const auto past = Lz4Block{}.seq("abcd", 4, 8).seq("xyz", 16, 7).last("12345").bytes;
+    EXPECT_EQ(lz4_code(past, 27), ErrorCode::invalid_envelope);
+}
+
+TEST(Lz4Block, OutputMustBeTheDeclaredSize) {
+    if (!compression_available(CompressionAlgorithm::LZ4)) GTEST_SKIP() << "built without LZ4";
+    const auto block = Lz4Block{}.seq("abcdefghijklmnop", 16, 20).last("vwxyz").bytes;  // 41 bytes
+    EXPECT_EQ(lz4_code(block, 41), ErrorCode::generic);
+    for (size_t wrong : {size_t(40), size_t(42), size_t(0), size_t(1000)}) {
+        EXPECT_EQ(lz4_code(block, wrong), ErrorCode::invalid_envelope) << wrong;
+    }
+    const auto literals = Lz4Block{}.last("hello").bytes;
+    EXPECT_EQ(lz4_code(literals, 4), ErrorCode::invalid_envelope);
+    EXPECT_EQ(lz4_code(literals, 6), ErrorCode::invalid_envelope);
+}
+
+TEST(Lz4Block, MustEndWithLiterals) {
+    if (!compression_available(CompressionAlgorithm::LZ4)) GTEST_SKIP() << "built without LZ4";
+    // Ends right after a match: 6 bytes, 32 bytes, 140 bytes.
+    EXPECT_EQ(lz4_code(Lz4Block{}.seq("ab", 1, 4).bytes, 6), ErrorCode::invalid_envelope);
+    EXPECT_EQ(lz4_code(Lz4Block{}.seq("\xbf" "abcdefghijklm", 12, 18).bytes, 32), ErrorCode::invalid_envelope);
+    EXPECT_EQ(lz4_code(Lz4Block{}.seq(std::string(40, 'a'), 1, 100).bytes, 140), ErrorCode::invalid_envelope);
+    // The match ends the output and an empty literal run follows: the vector
+    // long-output-ends-with-match, which liblz4's fast path accepts (the sequence starts 32
+    // bytes before the end).
+    EXPECT_EQ(lz4_code(Lz4Block{}.seq("\xbf" "abcdefghijklm", 12, 18).last("").bytes, 32), ErrorCode::invalid_envelope);
+    EXPECT_EQ(lz4_code(Lz4Block{}.seq("ab", 1, 4).last("").bytes, 6), ErrorCode::invalid_envelope);
+}
+
+TEST(Lz4Block, TruncatedInputIsInvalid) {
+    if (!compression_available(CompressionAlgorithm::LZ4)) GTEST_SKIP() << "built without LZ4";
+    EXPECT_EQ(lz4_code({}, 0), ErrorCode::invalid_envelope) << "an empty block";
+    EXPECT_EQ(lz4_code({0x50, 'a', 'b'}, 5), ErrorCode::invalid_envelope) << "fewer literals than announced";
+    EXPECT_EQ(lz4_code({0xf0}, 15), ErrorCode::invalid_envelope) << "literal length cut off";
+    EXPECT_EQ(lz4_code({0xf0, 0xff, 0xff}, 600), ErrorCode::invalid_envelope) << "continuation cut off";
+    auto one_offset_byte = Lz4Block{}.seq("abcd", 4, 4).bytes;
+    one_offset_byte.resize(one_offset_byte.size() - 1);
+    EXPECT_EQ(lz4_code(one_offset_byte, 8), ErrorCode::invalid_envelope) << "one offset byte";
+    auto match_length_cut = Lz4Block{}.seq("abcdefghijklmnopqrst", 1, 600).last("vwxyz").bytes;
+    match_length_cut.resize(25);  // token, length byte, 20 literals, offset, one 255: then nothing
+    EXPECT_EQ(lz4_code(match_length_cut, 625), ErrorCode::invalid_envelope) << "match length cut off";
+}
+
+TEST(Lz4Block, LastFiveBytesAreLiterals) {
+    if (!compression_available(CompressionAlgorithm::LZ4)) GTEST_SKIP() << "built without LZ4";
+    // The vector last-literals-too-short: a match, then 4 literals.
+    const auto short_block = Lz4Block{}.seq("\xb3" "a", 1, 14).last("aaaa").bytes;
+    EXPECT_EQ(lz4_code(short_block, 20), ErrorCode::invalid_envelope);
+    // 40 bytes: the sequence starts 40 bytes before the end, the match ends 4 before it.
+    const auto long_block = Lz4Block{}.seq("abcd", 4, 32).last("wxyz").bytes;
+    EXPECT_EQ(lz4_code(long_block, 40), ErrorCode::invalid_envelope);
+    // liblz4's fast path: 10 literals and an 18-byte match from 32 bytes before the end,
+    // then 4 literals.
+    EXPECT_EQ(lz4_code(Lz4Block{}.seq("abcdefghij", 8, 18).last("wxyz").bytes, 32), ErrorCode::invalid_envelope);
+    EXPECT_EQ(lz4_bytes(Lz4Block{}.seq("abcdefghij", 8, 18).last("vwxyz").bytes, 33),
+              text("abcdefghij" "cdefghijcdefghijcd" "vwxyz"))
+        << "with 5 final literals it's valid";
+    EXPECT_EQ(lz4_code(Lz4Block{}.seq("abcd", 4, 32).last("").bytes, 36), ErrorCode::invalid_envelope);
+    const auto ok = Lz4Block{}.seq("abcd", 4, 32).last("vwxyz").bytes;
+    EXPECT_EQ(lz4_code(ok, 41), ErrorCode::generic);
+}
+
+TEST(Lz4Block, LastMatchStartsTwelveBytesBeforeTheEnd) {
+    if (!compression_available(CompressionAlgorithm::LZ4)) GTEST_SKIP() << "built without LZ4";
+    // The vector last-match-too-close: the match starts 9 bytes before the end.
+    EXPECT_EQ(lz4_code(Lz4Block{}.seq("\xaa" "a", 1, 4).last("aaaaa").bytes, 11), ErrorCode::invalid_envelope);
+    // 25 or 55 literals, then a 4-byte match 9 bytes before the end, then 5 literals.
+    for (size_t lits : {size_t(25), size_t(55)}) {
+        const std::string q(lits, 'q');
+        EXPECT_EQ(lz4_code(Lz4Block{}.seq(q, 8, 4).last("vwxyz").bytes, lits + 9), ErrorCode::invalid_envelope)
+            << lits;
+    }
+    // Starting exactly 12 bytes before the end is allowed (the vector last-match-at-the-limit),
+    // short and long.
+    EXPECT_EQ(lz4_bytes(Lz4Block{}.seq("\xad" "a", 1, 7).last("aaaaa").bytes, 14),
+              text("\xad" "aaaaaaaaaaaaa"));
+    const std::string thirty(30, 'r');
+    EXPECT_EQ(lz4_bytes(Lz4Block{}.seq(thirty, 1, 7).last("vwxyz").bytes, 42), text(thirty + "rrrrrrr" + "vwxyz"));
+    // An earlier match counts only through the last one.
+    EXPECT_EQ(lz4_code(Lz4Block{}.seq(thirty, 1, 7).seq("", 1, 4).last("vwxyz").bytes, 46),
+              ErrorCode::invalid_envelope);
+}
+
+TEST(Lz4Block, LiteralOnlyBlocksAreValidAtAnyLength) {
+    if (!compression_available(CompressionAlgorithm::LZ4)) GTEST_SKIP() << "built without LZ4";
+    for (size_t n : {size_t(1), size_t(4), size_t(5), size_t(11), size_t(12), size_t(14), size_t(15), size_t(31),
+                     size_t(32), size_t(300), size_t(5000)}) {
+        std::string lits(n, 'x');
+        for (size_t i = 0; i < n; ++i) lits[i] = static_cast<char>('a' + i % 26);
+        EXPECT_EQ(lz4_bytes(Lz4Block{}.last(lits).bytes, n), text(lits)) << n;
+        // The final token's match-length bits are ignored.
+        EXPECT_EQ(lz4_bytes(Lz4Block{}.last(lits, 0xf).bytes, n), text(lits)) << n;
+    }
+    // An empty output: the block 00, and also 01 to 0f (liblz4 accepts only 00).
+    for (uint8_t token = 0; token <= 15; ++token) {
+        EXPECT_TRUE(lz4_bytes({token}, 0).empty()) << int(token);
+    }
+    EXPECT_EQ(lz4_code({0x10, 'a'}, 0), ErrorCode::invalid_envelope);
+}
+
+// Whatever liblz4 writes still decodes, and the rules apply through the envelope too.
+TEST(Lz4Block, CompressorOutputDecodesAndEnvelopesAreChecked) {
+    if (!compression_available(CompressionAlgorithm::LZ4)) GTEST_SKIP() << "built without LZ4";
+    std::mt19937 rng(5);
+    for (size_t n = 0; n < 2000; n += 1 + n / 8) {
+        std::vector<uint8_t> data(n);
+        for (auto& b : data) b = static_cast<uint8_t>(rng() % 4 == 0 ? rng() : 'a' + rng() % 3);
+        for (int level : {1, 9}) {
+            const auto block = compress(CompressionAlgorithm::LZ4, data, level);
+            EXPECT_EQ(decompress(CompressionAlgorithm::LZ4, block, n), data) << n << " level " << level;
+        }
+    }
+    // An envelope around the 37-byte offset-0 block (the vector lz4-block/offset-zero).
+    const auto block = Lz4Block{}.seq("\xd9#abcdefghijkl", 0, 18).last("vwxyz").bytes;
+    std::vector<uint8_t> env{'B', 'T', 'O', 'N', 1, 1, 0, 0, 0, 0, 0, static_cast<uint8_t>(block.size()), 0, 0, 0, 37};
+    env.insert(env.end(), block.begin(), block.end());
+    EXPECT_EQ(code_of(env), ErrorCode::invalid_envelope);
+}
+
+namespace {
+
+// A reference LZ4 block decoder that applies SPEC §6 while it decodes (after btoon-go's
+// codecs/lz4block.go): every match starts at least 12 bytes before the end and ends at
+// least 5 before it, offsets are 1 … bytes written, and the output is exactly `size`.
+std::optional<std::vector<uint8_t>> lz4_reference(const std::vector<uint8_t>& src, size_t size) {
+    if (src.empty()) return std::nullopt;
+    std::vector<uint8_t> dst(size);
+    size_t si = 0, di = 0;
+    for (;;) {
+        if (si >= src.size()) return std::nullopt;  // the block ends with a match
+        const uint8_t token = src[si++];
+        size_t lit = token >> 4;
+        if (lit == 15) {
+            for (;;) {
+                if (si >= src.size()) return std::nullopt;
+                const uint8_t b = src[si++];
+                lit += b;
+                if (lit > src.size()) return std::nullopt;
+                if (b != 255) break;
+            }
+        }
+        if (lit > src.size() - si || lit > size - di) return std::nullopt;
+        std::copy_n(src.begin() + static_cast<std::ptrdiff_t>(si), lit, dst.begin() + static_cast<std::ptrdiff_t>(di));
+        si += lit;
+        di += lit;
+        if (si == src.size()) break;  // literals only: the last sequence
+        if (size < 12 || di > size - 12) return std::nullopt;
+        if (src.size() - si < 2) return std::nullopt;
+        const size_t offset = size_t(src[si]) | (size_t(src[si + 1]) << 8);
+        si += 2;
+        if (offset == 0 || offset > di) return std::nullopt;
+        size_t n = token & 15u;
+        if (n == 15) {
+            for (;;) {
+                if (si >= src.size()) return std::nullopt;
+                const uint8_t b = src[si++];
+                n += b;
+                if (n > size) return std::nullopt;
+                if (b != 255) break;
+            }
+        }
+        n += 4;
+        if (n > size - 5 - di) return std::nullopt;
+        for (size_t k = 0; k < n; ++k) dst[di + k] = dst[di + k - offset];
+        di += n;
+    }
+    if (di != size) return std::nullopt;
+    return dst;
+}
+
+}  // namespace
+
+// Core (the structural pass, then liblz4) and the reference decoder agree on every block:
+// the same verdict, and the same output when valid. The blocks are random sequences around
+// the rules' edges, and mutations of what liblz4's compressor writes.
+TEST(Lz4Block, AgreesWithAReferenceDecoder) {
+    if (!compression_available(CompressionAlgorithm::LZ4)) GTEST_SKIP() << "built without LZ4";
+    std::mt19937 rng(11);
+    auto pick = [&](size_t lo, size_t hi) { return lo + rng() % (hi - lo + 1); };
+    size_t accepted = 0, rejected = 0;
+    auto compare = [&](const std::vector<uint8_t>& block, size_t size) {
+        const auto expected = lz4_reference(block, size);
+        std::optional<std::vector<uint8_t>> got;
+        try {
+            got = decompress(CompressionAlgorithm::LZ4, block, size);
+        } catch (const BtoonException& e) {
+            ASSERT_EQ(e.code(), ErrorCode::invalid_envelope) << e.what();
+        }
+        ASSERT_EQ(got.has_value(), expected.has_value())
+            << "size " << size << ", block of " << block.size() << " bytes, core "
+            << (got ? "accepts" : "rejects") << " it";
+        if (got) {
+            ASSERT_EQ(*got, *expected);
+            ++accepted;
+        } else {
+            ++rejected;
+        }
+    };
+    for (int round = 0; round < 20000; ++round) {
+        // A random block: sequences with lengths and offsets near the limits.
+        Lz4Block b;
+        size_t written = 0;
+        const size_t sequences = pick(0, 4);
+        for (size_t s = 0; s < sequences; ++s) {
+            std::string lits(pick(0, 40), 'x');
+            for (auto& c : lits) c = static_cast<char>('a' + rng() % 4);
+            written += lits.size();
+            const size_t offset = pick(0, written + 2);
+            const size_t length = pick(4, 40);
+            b.seq(lits, static_cast<uint16_t>(offset), length);
+            written += length;
+        }
+        std::string last(pick(0, 8), 'z');
+        written += last.size();
+        if (rng() % 8 != 0) b.last(last, static_cast<uint8_t>(rng() % 16));
+        size_t size = written;
+        if (rng() % 10 == 0) size = std::max<size_t>(written, 1) - 1 + pick(0, 2);  // near-miss sizes
+        compare(b.bytes, size);
+    }
+    for (int round = 0; round < 3000; ++round) {
+        // liblz4's own output for runny data, then mutated.
+        std::vector<uint8_t> data(pick(1, 300));
+        for (auto& c : data) c = static_cast<uint8_t>(rng() % 3 == 0 ? rng() : 'a' + rng() % 2);
+        auto block = compress(CompressionAlgorithm::LZ4, data, rng() % 2 ? 1 : 9);
+        compare(block, data.size());
+        switch (rng() % 4) {
+            case 0: block[rng() % block.size()] ^= static_cast<uint8_t>(1u << (rng() % 8)); break;
+            case 1: block.resize(block.size() - rng() % std::min<size_t>(block.size(), 4)); break;
+            case 2: block.push_back(static_cast<uint8_t>(rng())); break;
+            default: block[rng() % block.size()] = static_cast<uint8_t>(rng()); break;
+        }
+        compare(block, data.size());
+    }
+    EXPECT_GT(accepted, 1000u);
+    EXPECT_GT(rejected, 1000u);
 }

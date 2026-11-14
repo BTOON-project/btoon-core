@@ -45,7 +45,9 @@ plus signed envelopes when they're constructed with a `Security`.
   large allocation up front. At the limit, a 1-byte probe tells "the stream finished
   exactly here" apart from "the stream wants more". LZ4 and Snappy expose block APIs
   that need the whole output buffer, so their size claims are checked against a
-  worst-case expansion ratio first.
+  worst-case expansion ratio first. An LZ4 block's structure is also checked before
+  liblz4 runs (offsets, end-of-block conditions, exact size; SPEC §6), because liblz4's
+  fast path skips those checks.
 - **Signing** (`src/security.cpp`, `src/sha256.cpp`): the HMAC-SHA256 implementation is
   in-tree and checked against FIPS 180-4 and RFC 4231 vectors. MACs are compared in
   constant time, and the MAC is verified before any parsing.
@@ -86,7 +88,7 @@ plus signed envelopes when they're constructed with a `Security`.
 |---|---|
 | `include/btoon/` | Public headers (the installed set is listed in `BTOON_PUBLIC_HEADERS`) |
 | `src/internal.h` | Private helpers: endian load/store, UTF-8, bigint, tabular rule, `fail()` |
-| `src/schema.cpp`, `validator.cpp`, `zero_copy.cpp` | Schemas, structural validation, read-only views |
+| `src/schema.cpp`, `validator.cpp`, `zero_copy.cpp` | Schemas, validation, memory-mapped and shared-memory buffers |
 | `src/*_codec.cpp` | Delta, RLE and dictionary utility codecs |
 | `tools/` | `btoon`, `btoon-convert`, `btoon-schema`, and `json_mapping.h` |
 | `experimental/` | Design sketches that aren't built (see its README) |

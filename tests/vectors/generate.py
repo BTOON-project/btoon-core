@@ -794,14 +794,18 @@ def build_03():
         print("note: lz4 not installed; skipping lz4 end-of-block vectors", file=sys.stderr)
         return
 
-    def lz4_block(id_, block: bytes, text: str, valid: bool, note: str):
+    def lz4_block(id_, block: bytes, text: str, valid: bool, note: str, liblz4_accepts: bool | None = None):
         doc = enc(text)
         try:
             out = lz4.block.decompress(block, uncompressed_size=len(doc))
         except Exception:
             out = None
-        # liblz4 is the reference: each vector states its verdict.
-        assert (out == doc) if valid else (out is None), f"{id_}: liblz4 disagrees"
+        # Each vector records liblz4's verdict. It matches the spec except on liblz4's fast
+        # path, which skips the end-of-block checks (§6); those vectors say so.
+        if valid:
+            assert out == doc, f"{id_}: liblz4 verdict changed"
+        else:
+            assert (out is not None) == bool(liblz4_accepts), f"{id_}: liblz4 verdict changed"
         hex_ = envelope(1, block, len(doc)).hex()
         if valid:
             decode_only(id_, hex_, text, note=note, requires="lz4")
@@ -818,6 +822,21 @@ def build_03():
               "the last match starts exactly 12 bytes before the end, followed by 5 literals")
     lz4_block("lz4-block/final-token-match-bits-ignored", bytes.fromhex("6fa5") + b"aaaaa", "aaaaa", True,
               "the final token's match-length bits are ignored")
+    # Longer outputs. A match at offset 12 after "\xbf" + 13 letters repeats "bcdefghijklm".
+    letters = "abcdefghijklm"
+    copied = letters[1:] * 3
+    lz4_block("lz4-block/long-output-ends-with-match",
+              bytes([0xEE, 0xBF]) + letters.encode() + bytes.fromhex("0c00" "00"), letters + copied[:18], False,
+              "a 32-byte output whose last sequence is a match; liblz4's fast path accepts it", liblz4_accepts=True)
+    # 37-byte outputs (str8 header d9 23, then 35 characters) where only the offset is wrong:
+    # 14 literals, an 18-byte match, then 5 literals, so the end-of-block conditions hold.
+    first = "abcdefghijkl"
+    lz4_block("lz4-block/offset-zero", bytes([0xEE, 0xD9, 0x23]) + first.encode() + bytes.fromhex("0000" "50") + b"vwxyz",
+              first + "x" * 18 + "vwxyz", False,
+              "offset 0 is invalid in the LZ4 block format; liblz4 accepts it and writes zeros", liblz4_accepts=True)
+    lz4_block("lz4-block/offset-before-start",
+              bytes([0xEE, 0xD9, 0x23]) + first.encode() + bytes.fromhex("1400" "50") + b"vwxyz",
+              first + "x" * 18 + "vwxyz", False, "the match reaches 20 bytes back when only 14 have been written")
 
 
 def zlib_with_fdict(data: bytes) -> bytes:

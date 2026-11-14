@@ -20,7 +20,7 @@ below that mention them. For the format itself, see [SPEC.md](SPEC.md).
 | `Array` | `std::vector<Value>` | |
 | `Map` | `std::map<std::string, Value>` | Iterates in UTF-8 byte order, the canonical key order |
 | `Extension` | `{int8_t type; std::vector<uint8_t> data;}` | Any extension not listed below |
-| `Timestamp` | `{int64_t seconds; uint32_t nanoseconds; int16_t timezone_offset; bool has_timezone;}` | Ext -1. `Timestamp::now()`, `from_milliseconds()`, `from_microseconds()` |
+| `Timestamp` | `{int64_t seconds; uint32_t nanoseconds; int16_t timezone_offset; bool has_timezone;}` | Ext -1. `Timestamp::now()`, `from_milliseconds()`, `from_microseconds()`. `to_milliseconds()` and `to_microseconds()` round down and throw `invalid_argument` when the instant doesn't fit in int64 |
 | `Date` | `{int64_t milliseconds;}` | Ext -2 |
 | `DateTime` | `{int64_t nanoseconds;}` | Ext -3 |
 | `BigInt` | `{std::vector<uint8_t> bytes;}` | Ext -4, two's complement BE. Canonicalized to `Int`/`Uint` when it fits |
@@ -84,7 +84,7 @@ Value back = decode(bytes, {.max_decompressed_size = 16 << 20});
 ```
 
 Other functions: `is_tabular(const Array&)` reports whether the encoder would use the
-columnar form. `version()` returns `"0.2.0"` and `spec_version()` returns `"0.2"`.
+columnar form. `version()` returns `"0.3.0"` and `spec_version()` returns `"0.3"`.
 
 ## Errors
 
@@ -187,8 +187,10 @@ The same thing through options: `encode(v, {.hmac_key = key})` and
 Also available:
 - `sha256(data)` and `hmac_sha256(key, a, b)`, both built in with no OpenSSL;
 - `constant_time_equal(a, b)`;
-- `Security::setAllowedTypes({...})`, which restricts which `Value` alternatives a
-  `Decoder` built with this `Security` will accept.
+- `Security::setAllowedTypes({...})`, which restricts which `Value` alternatives (by
+  variant index) a `Decoder` built with this `Security` will accept. A disallowed type
+  fails with `invalid_argument`. The rows of a tabular array are maps, so they need the
+  map type (index 8) like any other array of maps.
 
 ## Compression (`<btoon/compression.h>`)
 
@@ -200,14 +202,27 @@ std::vector<uint8_t> decompress_bounded(CompressionAlgorithm, std::span<const ui
 ```
 
 These work on raw codec payloads. The envelope adds the header that records the size.
-LZ4 block payloads can only be decompressed when you supply `expected_size`.
+LZ4 block payloads can only be decompressed when you supply `expected_size`, and must be
+valid under SPEC §6's block rules (no offset 0, end-of-block conditions met).
 
 ## Schemas and validation (`<btoon/schema.h>`, `<btoon/validator.h>`)
 
 - `SchemaBuilder("user").version(1,0,0).field(...).build()` builds a `Schema`. A schema
   can `validate(value)`, list errors with `validateWithErrors`, check
   `isCompatibleWith`, and round-trip through `toValue()`/`fromValue()`.
-  `SchemaRegistry` stores versions.
+  `SchemaRegistry` stores versions; persist it with `encode(registry.toValue())` and
+  `SchemaRegistry::fromValue()`.
+- Evolution: `old.isCompatibleWith(newer)` applies `old`'s `EvolutionStrategy`:
+  - `STRICT`: the same fields (name, type, `required`, constraints).
+  - `ADDITIVE`: every old field unchanged, and only optional fields added.
+  - `BACKWARD_COMPATIBLE` (the default): data written for the old schema validates under
+    the newer one. Optional fields may be added and fields removed (unless `newer` is
+    `STRICT`); types may widen (`int`/`uint` to `number` or `bigint`, `float` to
+    `number`, anything to `any`); a field may become optional or lose its constraints.
+  - `FLEXIBLE`: anything; use migrations.
+- `addMigration(from, to, fn)` registers a function; `migrate(value, to)` runs it.
+  `canMigrateTo(target)` only checks that the versions match or a migration exists; it
+  doesn't run anything.
 - Validation:
   - Required fields must be present.
   - Every present field, required or optional, must have its type and meet its
@@ -234,6 +249,10 @@ LZ4 block payloads can only be decompressed when you supply `expected_size`.
 - `SchemaInferrer(InferenceOptions{...}).inferFromArray(rows)` derives a schema from
   data. Integer fields infer as `"int"`. Mixed numeric fields become `"number"` when
   `merge_numeric_types` is set.
+  - A schema describes maps: `infer()` takes a map or an array of maps (the rows), and
+    anything else throws `invalid_argument`.
+  - `merge()` combines schemas into one that accepts each one's data: types widen, and
+    constraints merge (the smaller `min`, the larger `max`, the union of `enum`s).
 - `Validator(ValidationOptions{...}).validate(bytes)` decodes the bytes and checks the
   result against the options.
   - Decoding is strict, with `max_depth`, a decompression limit of
@@ -242,7 +261,12 @@ LZ4 block payloads can only be decompressed when you supply `expected_size`.
   - Strict decoding always rejects duplicate keys and invalid UTF-8.
     `allow_duplicate_map_keys` and `require_utf8_strings` matter only for
     `validate(value)`.
-  - It also offers `UTF8Validator`, `TypeValidator` and `SecurityValidator`.
+  - Validating bytes decodes them, so it allocates like `decode()`.
+  - `quickCheck(bytes)` (and the free `isValid(bytes)`) reports whether the bytes decode,
+    without the value checks.
+  - `sanitize(bytes)` returns the canonical re-encoding of valid input, or nothing.
+  - It also offers `UTF8Validator` (`sanitize` replaces each invalid sequence with
+    U+FFFD) and `TypeValidator`.
 
 ## Utility codecs (`<btoon/delta_codec.h>`, `rle_codec.h`, `dictionary_codec.h`)
 
@@ -260,15 +284,45 @@ encodings, so `0.0` and `-0.0` stay apart.
 ## C API (`<btoon/capi.h>`)
 
 ```c
-btoon_value_t* v = btoon_value_create_string("hi", 2);
-btoon_result_t r = btoon_encode(v, NULL);        /* r.error is set on failure */
+btoon_value_t* v = btoon_value_create_timestamp_with_offset(1704067200, 500000000, 120);
+btoon_encode_options_t eopts = {0};          /* zero-initialized: the defaults */
+eopts.compress = true;
+btoon_result_t r = btoon_encode(v, &eopts);
+if (r.status != BTOON_OK) fprintf(stderr, "%s: %s\n", btoon_status_name(r.status), r.error);
+
+btoon_status_t status;
 char* err = NULL;
-btoon_value_t* back = btoon_decode(r.data, r.size, NULL, &err);
-if (!back) { fprintf(stderr, "%s\n", err); btoon_free_error(err); }
+btoon_value_t* back = btoon_decode(r.data, r.size, NULL, &status, &err);
+if (!back) { fprintf(stderr, "%s: %s\n", btoon_status_name(status), err); btoon_free_error(err); }
 btoon_free_result(r);
 btoon_value_destroy(v);
 btoon_value_destroy(back);
 ```
 
-No C++ exception crosses the C boundary. Free values only with `btoon_value_destroy`,
-results with `btoon_free_result`, and error strings with `btoon_free_error`.
+- No C++ exception crosses the C boundary. `btoon_encode` and `btoon_decode` report a
+  `btoon_status_t` (`BTOON_OK`, or the SPEC §7 codes as `BTOON_ERROR_*`, plus
+  `BTOON_ERROR_INVALID_ARGUMENT` and `BTOON_ERROR_OUT_OF_MEMORY`) and a message.
+- The `btoon_value_create_*` functions return `NULL` when memory runs out or a pointer is
+  `NULL` with a nonzero length. Every type has one, including dates, datetimes, bigints,
+  vectors, and timestamps with nanoseconds and an offset.
+- A zero-initialized `btoon_encode_options_t` or `btoon_decode_options_t` (or `NULL`)
+  means the defaults. The decode options take `max_depth`, `max_decompressed_size`,
+  `max_values` (0 = default) and an HMAC key, as `DecodeOptions` does.
+- Ownership: values from `btoon_value_create_*` and `btoon_decode` belong to the caller
+  and are freed with `btoon_value_destroy`, which frees the whole tree. The create
+  functions copy their input; arrays and maps deep-copy their elements. Free results with
+  `btoon_free_result` and decode messages with `btoon_free_error`. Strings are
+  NUL-terminated; other buffers have `ptr == NULL` exactly when `len == 0`.
+
+## Zero-copy buffers (`<btoon/zero_copy.h>`)
+
+`MemoryMappedFile::open(path)` maps a file read-only and `SharedMemoryBuffer::create(name,
+size)` maps a named shared-memory segment (owner-only, POSIX mode 0600; not on Android).
+Decode from either with `decode(buffer->view().span())`. Both own their mapping and are
+neither copyable nor movable: keep them in the returned `std::unique_ptr`. `BufferPool`
+recycles byte buffers, and `ZeroCopyEncoder` encodes into a caller's buffer, a pool buffer
+or shared memory. The C functions `btoon_mmap_file` and `btoon_shm_create` return views
+that own their mapping.
+
+`MemoryPool` (`<btoon/memory_pool.h>`) is an arena allocator with 32-byte aligned
+allocations. The codec doesn't use it.

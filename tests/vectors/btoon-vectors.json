@@ -8444,6 +8444,27 @@
    "canonical": false,
    "note": "the final token's match-length bits are ignored",
    "requires": "lz4"
+  },
+  {
+   "id": "lz4-block/long-output-ends-with-match",
+   "hex": "42544f4e010100000000001200000020eebf6162636465666768696a6b6c6d0c0000",
+   "error": "invalid_envelope",
+   "note": "a 32-byte output whose last sequence is a match; liblz4's fast path accepts it",
+   "requires": "lz4"
+  },
+  {
+   "id": "lz4-block/offset-zero",
+   "hex": "42544f4e010100000000001700000025eed9236162636465666768696a6b6c000050767778797a",
+   "error": "invalid_envelope",
+   "note": "offset 0 is invalid in the LZ4 block format; liblz4 accepts it and writes zeros",
+   "requires": "lz4"
+  },
+  {
+   "id": "lz4-block/offset-before-start",
+   "hex": "42544f4e010100000000001700000025eed9236162636465666768696a6b6c140050767778797a",
+   "error": "invalid_envelope",
+   "note": "the match reaches 20 bytes back when only 14 have been written",
+   "requires": "lz4"
   }
  ]
 }
