@@ -29,7 +29,7 @@ from pathlib import Path
 
 import msgpack
 
-SPEC_VERSION = "0.2"
+SPEC_VERSION = "0.3"
 HMAC_KEY = b"btoon-conformance-key-0123456789"  # 32 bytes
 
 
@@ -708,10 +708,11 @@ def build():
     invalid("signed/empty-key-unsigned-input", enc(1).hex(), "invalid_argument", options={"hmac_key": ""})
 
     build_02()
+    build_03()
 
 
 def build_02():
-    """Vectors added in spec 0.2 (§11.1)."""
+    """Vectors added in spec 0.2 (§11.2)."""
     # --- NaN payloads in float vectors (§5.5, §10) -------------------------------------
     canonical("vector-f32/nan", F32Vec([math.nan, 1.0]), "d7fb0000c07f0000803f")
     canonical("vector-f32/nan-payloads", F32Vec([Bits32(0x7FA00001), Bits32(0xFFC00000)]),
@@ -770,6 +771,53 @@ def build_02():
                      note="written verbatim, this could be malformed or non-canonical")
     canonical("ext/future-id-written-as-given", Ext(-11, b"\x01"), "d4f501",
               note="ids reserved for future versions pass through (§5.7)")
+
+
+def build_03():
+    """Vectors added in spec 0.3 (§11.1)."""
+    # --- date and datetime at the 64-bit extremes (§5.2, §5.3) ------------------------
+    canonical("date/max", Date(2**63 - 1), "d7fe7fffffffffffffff")
+    canonical("date/min", Date(-(2**63)), "d7fe8000000000000000")
+    canonical("datetime/max", DateTime(2**63 - 1), "d7fd7fffffffffffffff")
+    canonical("datetime/min", DateTime(-(2**63)), "d7fd8000000000000000")
+
+    # --- a table with date and datetime columns (§5.6) --------------------------------
+    rows = [{"at": DateTime(1700000000123456789 + i), "day": Date(1700000000000 + 86400000 * i), "id": i}
+            for i in range(6)]
+    canonical("tabular/date-and-datetime-columns", rows, tabular=1,
+              note="every library must write these back, through its typed date and datetime values (§10)")
+
+    # --- LZ4 end-of-block conditions (§6) ---------------------------------------------
+    try:
+        import lz4.block
+    except ImportError:
+        print("note: lz4 not installed; skipping lz4 end-of-block vectors", file=sys.stderr)
+        return
+
+    def lz4_block(id_, block: bytes, text: str, valid: bool, note: str):
+        doc = enc(text)
+        try:
+            out = lz4.block.decompress(block, uncompressed_size=len(doc))
+        except Exception:
+            out = None
+        # liblz4 is the reference: each vector states its verdict.
+        assert (out == doc) if valid else (out is None), f"{id_}: liblz4 disagrees"
+        hex_ = envelope(1, block, len(doc)).hex()
+        if valid:
+            decode_only(id_, hex_, text, note=note, requires="lz4")
+        else:
+            invalid(id_, hex_, "invalid_envelope", note=note, requires="lz4")
+
+    lz4_block("lz4-block/ends-with-match", bytes.fromhex("20a561" "0100"), "aaaaa", False,
+              "the block ends with a match instead of a literals-only sequence")
+    lz4_block("lz4-block/last-literals-too-short", bytes.fromhex("2ab361" "0100" "40") + b"aaaa", "a" * 19, False,
+              "only 4 literal bytes follow the last match; the last 5 must be literals")
+    lz4_block("lz4-block/last-match-too-close", bytes.fromhex("20aa61" "0100" "50") + b"aaaaa", "a" * 10, False,
+              "the last match starts 9 bytes before the end; it must start at least 12 before")
+    lz4_block("lz4-block/last-match-at-the-limit", bytes.fromhex("23ad61" "0100" "50") + b"aaaaa", "a" * 13, True,
+              "the last match starts exactly 12 bytes before the end, followed by 5 literals")
+    lz4_block("lz4-block/final-token-match-bits-ignored", bytes.fromhex("6fa5") + b"aaaaa", "aaaaa", True,
+              "the final token's match-length bits are ignored")
 
 
 def zlib_with_fdict(data: bytes) -> bytes:

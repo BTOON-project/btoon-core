@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] - 2026-11-14
 
-Implements spec 0.2 (docs/SPEC.md §11.1). The wire format is unchanged: every valid 0.1
+Implements spec 0.2 (docs/SPEC.md §11.2). The wire format is unchanged: every valid 0.1
 document that fits the new limits decodes to the same value. Decisions D23–D26 in the
 workspace's docs/DECISIONS.md record why.
 
